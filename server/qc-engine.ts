@@ -620,8 +620,14 @@ function evaluateMSK(text: string, raw: string, gaps: QCGap[], passed: string[])
   const ctx = extractClientContext(text);
   const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
 
+  // Scope all checks to Section IV onward to avoid false-passes from Section I service dates/locations
+  const sectionIVStart = text.search(/section\s*IV\b|SECTION IV\b|condition.by.condition|describe.*detail.*each/i);
+  const mskAnswerText = sectionIVStart !== -1 ? text.substring(sectionIVStart) : text;
+
   // -- IV-A: Onset --
-  if (!hasTimeframe(text)) {
+  // False-pass guard: service years (1985, 1986, etc.) appear in Section I header.
+  // Require a timeframe within the Section IV+ answer region.
+  if (!hasTimeframe(mskAnswerText)) {
     const onsetIdx = text.search(/onset|when did|how long|history of/i);
     const onsetSnip = onsetIdx >= 0 ? text.substring(onsetIdx, onsetIdx + 200).trim() : '';
     const onsetNote = onsetSnip && wordCount(onsetSnip) > 3
@@ -643,7 +649,9 @@ If the injury happened during service, say it clearly: "This started while I was
   } else passed.push('Section IV-A -- Onset');
 
   // -- IV-C: Pain location --
-  if (!hasLocation(text)) {
+  // False-pass guard: deployment locations (Persian Gulf, Indian Ocean) appear in Section I.
+  // hasLocation() would match those. Scope to Section IV answer text.
+  if (!hasLocation(mskAnswerText)) {
     gaps.push({
       section: 'Section IV-C',
       field: 'Pain Location and Radiation',
@@ -682,7 +690,16 @@ Fill in each section with what is actually true for you.`
   } else passed.push('Section V -- Functional Impact');
 
   // -- Symptom Progression --
-  const hasProgression = /\b(better|worse|same|worsening|improving|progressing|deteriorating|flare|constant|chronic|increasing|decreasing|spread|aggravat)\b/i.test(text);
+  // False-pass guard: "worsened", "constant", "chronic", "flare" appear in the form PROMPT bullets
+  // ("Describe how symptoms have changed OVER TIME (worsened, spread, increased frequency...)").
+  // Scope to Section IV answer text and require a sentence-level match.
+  const hasProgression = (() => {
+    // Must appear in the answer region and in a sentence context (not just as a parenthetical example)
+    if (!/\b(better|worse|same|worsening|improving|deteriorating|flare|constant|chronic|increasing|decreasing|spread|aggravat)\b/i.test(mskAnswerText)) return false;
+    // Require it appears in a sentence with at least 6 surrounding words (not just a prompt)
+    const progressMatch = mskAnswerText.match(/.{0,60}\b(gotten worse|getting worse|progressively worse|stayed the same|worsening|deteriorating|flare.up|flared|constant|spread to|aggravated).{0,60}/i);
+    return !!(progressMatch && wordCount(progressMatch[0]) >= 5);
+  })();
   if (!hasProgression) {
     gaps.push({
       section: 'Section IV-B',
@@ -701,8 +718,21 @@ Fill in each section with what is actually true for you.`
 
 function evaluateGI(text: string, raw: string, gaps: QCGap[], passed: string[]) {
 
+  // GI form is primarily checkboxes. In the PDF extraction all checkboxes render as ☐
+  // regardless of whether they were checked. We therefore detect client answers by:
+  //   (a) typed text in specific answer fields (onset date, pain score)
+  //   (b) presence of client-typed narrative in answer-only positions
+
+  // Helper: does the client appear to have typed anything in a given section?
+  const clientTypedInSection = (pattern: RegExp, minWords = 2): boolean => {
+    const snip = findAnswer(text, pattern, 1200);
+    return !!snip && wordCount(snip) >= minWords;
+  };
+
   // -- Section III: Onset --
-  if (!hasTimeframe(text)) {
+  // False-pass guard: "Symptom onset" appears in the checkbox LABEL — require a typed date/year
+  const hasTypedOnsetDate = /approximate symptom onset\s*:?\s*(\d{4}|\d+\/\d+|during|after|since|service|\w+ \d{4})/i.test(text);
+  if (!hasTypedOnsetDate) {
     gaps.push({
       section: 'Section III',
       field: 'Onset and History',
@@ -716,7 +746,16 @@ function evaluateGI(text: string, raw: string, gaps: QCGap[], passed: string[]) 
   } else passed.push('Section III — Onset');
 
   // -- Section III: Symptom Description --
-  const hasGISymptoms = /\b(cramp|bloat|nausea|diarrhea|constipation|reflux|heartburn|pain|bleed|urgency|gas|vomit|indigestion|belch|regurgitat|loose stool|bowel|stomach|abdomen|gut|irritable)\b/i.test(text);
+  // False-pass guard: GI symptom words appear in checkbox LABELS ("Nausea", "Abdominal bloating", etc.)
+  // The GI form is almost entirely checkboxes. We cannot tell from PDF text whether a checkbox
+  // was checked. We require a typed pain score number OR a multi-word typed narrative beyond the labels.
+  const hasPainScore = /pain severity\s*(?:\(0[^)]*\))?\s*:?\s*\d/i.test(text);
+  const hasTypedSymptomNarrative = (() => {
+    const narrativeMatch = findAnswer(text, /describe|history|explain|tell us|onset|began|started|since/i, 800);
+    return !!(narrativeMatch && wordCount(narrativeMatch) >= 8 &&
+      /\b(cramp|bloat|nausea|diarrhea|constipation|reflux|heartburn|pain|urgency|gas|vomit|bowel|stomach|abdomen|acid|IBS)\b/i.test(narrativeMatch));
+  })();
+  const hasGISymptoms = hasPainScore || hasTypedSymptomNarrative;
   if (!hasGISymptoms) {
     gaps.push({
       section: 'Section III',
@@ -731,7 +770,19 @@ function evaluateGI(text: string, raw: string, gaps: QCGap[], passed: string[]) 
   } else passed.push('Section III — Symptom Description');
 
   // -- Section IV: Severity Rating --
-  if (!/\b(mild|moderate|severe)\b/i.test(text)) {
+  // False-pass guard: "Mild", "Moderate", "Severe" appear in the checkbox LABEL text.
+  // Require the word to appear AFTER the "Severity Level:" label, not anywhere in the form.
+  const severityAfterLabel = (() => {
+    const labelIdx = text.search(/severity level\s*:/i);
+    if (labelIdx === -1) return false;
+    const afterLabel = text.substring(labelIdx, labelIdx + 400);
+    // The label text itself says "Mild – Occasional...", "Moderate – Frequent...", "Severe – Diarrhea..."
+    // A checked answer would have the word appear distinctly. Since we cannot detect checkmarks,
+    // we flag this as missing unless there is a typed severity word OUTSIDE the label descriptions.
+    // Strategy: look for the word appearing somewhere OTHER than next to a dash (the label format uses dashes).
+    return /\b(mild|moderate|severe)\b(?!\s*[–\-])/i.test(afterLabel);
+  })();
+  if (!severityAfterLabel) {
     gaps.push({
       section: 'Section IV',
       field: 'Severity Rating',
@@ -749,7 +800,18 @@ Severe: "I would rate my GI condition as Severe. On bad days I am unable to leav
   } else passed.push('Section IV — Severity');
 
   // -- Functional Impact --
-  const hasGIFuncImpact = /\b(work|daily|routine|avoid|cancel|miss|unable|bathroom|emergency|accident|leave|eat|diet|social|plan|embarrass|isolat|sleep|travel)\b/i.test(text);
+  // False-pass guard: "work absences", "social", "daily activity" appear in checkbox LABELS.
+  // Require a TYPED narrative with functional impact words, not just label text.
+  const hasGIFuncImpact = (() => {
+    // Look for typed content in a narrative field (not checkbox label regions)
+    // Checkbox labels in Section IV are short phrases. A typed answer would be longer and appear
+    // outside those exact label strings. Check the answer block zone.
+    const funcSnip = findAnswer(text, /how.*affect|daily.*life|impact|describe.*condition|work.*miss|occupational/i, 800);
+    if (funcSnip && wordCount(funcSnip) >= 8 &&
+      /\b(work|daily|routine|avoid|cancel|miss|unable|bathroom|emergency|leave|eat|diet|social|plan|embarrass|isolat|sleep|travel)\b/i.test(funcSnip)) return true;
+    // Also accept: client wrote a narrative anywhere that goes beyond 3 consecutive non-label words about impact
+    return /(?:i (?:have to|cannot|always|must)|my (?:work|job|daily)|(?:miss|avoid|unable to|have had to)).{0,200}(?:bathroom|work|social|travel|leave|eat)/i.test(text);
+  })();
   if (!hasGIFuncImpact) {
     gaps.push({
       section: 'Section V',
@@ -810,9 +872,45 @@ If there was a specific incident — a blast, a fall, a vehicle accident — men
   }
 
   // -- Q17: Severity, accompanying symptoms, duration, impact --
-  const hasSeveritySymptoms = /\b(severe|moderate|mild|debilitating|intense|throb|pound|nausea|vomit|sensitive|light|sound|aura|vision|blur|pressure|tight|throb|dizzy|vertigo)\b/i.test(text);
+  // False-pass guard: symptom words like "Throbbing pain", "Nausea", "Sensitivity to light" appear
+  // as CHECKBOX LABELS in Q16. We must require these words appear in a TYPED narrative, not a label.
+  // Strategy: look specifically at what appears AFTER the Q17 prompt.
+  // Hoist anyEpisode so it can be used in both q17Answer and hasHeadacheFuncImpact checks
+  const anyEpisode = text.match(/(?:it (?:will|starts?|begins?|gets?)|i (?:normally|usually|have to|need to)).{20,400}/i);
+
+  // Q17 answer location note: In the Headaches PDF, Q17's answer field appears AFTER the Q19
+  // checkbox list (which comes before Q20 in the layout). The answer may appear near
+  // "If yes, explain:" or after Q21. We search a wider radius and also scan the full text
+  // for a client-typed sentence that describes a headache episode.
+  const q17Answer = (() => {
+    // Look ONLY at text AFTER the Q17 prompt to avoid contamination from Q16 checkbox labels.
+    // findAnswer() searches bidirectionally — the "before" window reaches Q13/Q16 checkboxes
+    // ("Throbbing pain", "Nausea", etc.) which would cause false-passes. Use forward-only extraction.
+    const q17Idx = text.search(/describe a typical severe episode|17\..*describe.*typical/i);
+    const direct = q17Idx >= 0 ? text.substring(q17Idx, q17Idx + 1200) : '';
+    if (direct && wordCount(direct) >= 8) return direct;
+    // Also look for the answer near Q21 "If yes, explain" (forward only from Q21 position)
+    const q21Idx = text.search(/have supervisors.*commented|supervisors.*coworkers.*commented/i);
+    const nearQ21 = q21Idx >= 0 ? text.substring(q21Idx, q21Idx + 600) : '';
+    if (nearQ21 && wordCount(nearQ21) >= 8) return nearQ21;
+    return anyEpisode ? anyEpisode[0] : null;
+  })();
+  // Q17 requires: symptom word(s) + duration/functional detail ("lie down", "cannot", "hours", "day", "work")
+  // Chris's answer has "severe" and "sleep it off" but lacks: pain scale, symptoms list, specific duration, what he can't do.
+  // Require at least 2 of these detail categories to be present in the answer.
+  const hasSeveritySymptoms = (() => {
+    if (!q17Answer || wordCount(q17Answer) < 10) return false;
+    // "Severe" alone is not a symptom descriptor — require a PHYSICAL symptom word
+    const hasSymptomWord = /\b(throb|throbbing|pound|pounding|nausea|nauseated|vomit|light sensitiv|sound sensitiv|photophob|phonophob|aura|vision|blur|pressure|tightness|dizzy|vertigo|stabbing|sharp pain|aching)\b/i.test(q17Answer);
+    const hasDurationDetail = /\b(hour|hours?|day|overnight|all day|most of|\d+\s*hour|\d+\s*day|last|lasts?|duration|until)\b/i.test(q17Answer);
+    const hasFunctionalDetail = /\b(cannot|unable|can.t|have to|need to|must|stop|lie down|lay down|bed|rest|miss|dark|quiet|function|work|drive)\b/i.test(q17Answer);
+    const hasSeverityRating = /\b(\d+\s*(?:out of|\/)\s*10|pain scale|\d\/10|level \d)\b/i.test(q17Answer);
+    // Need symptom word PLUS at least one other detail category, OR a pain rating
+    const detailCount = [hasDurationDetail, hasFunctionalDetail, hasSeverityRating].filter(Boolean).length;
+    return hasSymptomWord && detailCount >= 1 && wordCount(q17Answer) >= 15;
+  })();
   if (!hasSeveritySymptoms) {
-    const q17Snip = findAnswer(text, /question\s*17|describe.*headache|intensity|symptom|headache like/i);
+    const q17Snip = q17Answer;
     const q17Note = q17Snip && wordCount(q17Snip) > 4
       ? `The headache description at Question 17 does not include the level of severity, what physical symptoms accompany the headache, how long they typically last, or what the client cannot do during an episode.`
       : `Question 17 is blank or does not describe the headache in enough detail. The doctor needs to understand what a headache episode actually feels like, how severe it is, and how long it lasts.`;
@@ -831,8 +929,34 @@ Be honest about how severe these episodes are. The doctor needs an accurate pict
   } else passed.push('Q17 — Headache Severity and Symptoms');
 
   // -- Q20: Frequency --
-  const hasFrequency = /\b(\d+)\s*(time|per|a|each|every|times?)\s*(day|week|month|year)\b/i.test(text)
-    || /\b(daily|weekly|monthly|twice|three times|several times|few times|occasional|frequent|rarely|constant|constant)\b/i.test(text);
+  // False-pass guard: "daily", "weekly", "monthly" appear in Q13 CHECKBOX LABELS ("Less than once per month",
+  // "1-2 times per month", "5+ times per month") and Q14 labels. We need a typed answer.
+  // Q20 on this form asks "how many workdays per month do you miss" — look for a number near that question.
+  // Also accept a typed frequency anywhere that reads like a client sentence.
+  const hasFrequency = (() => {
+    // Typed number near Q20: use forward-only lookup (findAnswer is bidirectional and reaches Q19 checkbox labels).
+    // Q20 asks "how many workdays per month do you miss" — only look at text AFTER this question.
+    const q20Idx = text.search(/approximately how many workdays|how many workdays per month/i);
+    const q20After = q20Idx >= 0 ? text.substring(q20Idx, q20Idx + 300) : '';
+    // Strip the question text, zero-width spaces, and question numbers (handling ZWS after periods too)
+    const q20Content = q20After
+      .replace(/approximately how many workdays[^\n]*/i, '')  // strip Q20 question line
+      .replace(/[\u200b\u200c\u200d\ufeff]/g, '')           // strip zero-width spaces
+      .replace(/\b\d{1,2}\.[\s\u200b]*/g, '')               // strip question numbers like "21." or "21.\u200b"
+      .replace(/have supervisors[^\n]*/i, '')                 // strip Q21 question text
+      .replace(/\s+/g, ' ')
+      .trim();
+    // Only pass if a digit (typed answer) remains that isn't just a document ref or page number
+    if (q20Content && q20Content.length >= 1 && /\b\d+\b/.test(q20Content) &&
+        !/^(\d+\s+of\s+\d+|page|document ref)/i.test(q20Content)) return true;
+    if (q20Content && /\b(none|zero|occasionally|rarely|never)\b/i.test(q20Content)) return true;
+    // Client-typed sentence with frequency (not just a label)
+    // Require it to be part of a sentence (has a subject/verb), not just a bare label
+    // Guards:
+    //   - "once per month" appears in Q13 label "Less than once per month" — require no "than " before it
+    //   - "1–2 times per month", "3–4 times per month" are Q13 checkbox labels — exclude range patterns \d[\u2013-]\d
+    return /\b(i miss|miss about|miss approximately|approximately \d|(?<![\u2013\-]\d )(?<!\d[\u2013\-])\d+ times? per|\d+ days? per|every \d+ days?|(?<!than )once (?:a|per) (?:week|month)|twice (?:a|per) (?:week|month))/i.test(text);
+  })();
   if (!hasFrequency) {
     gaps.push({
       section: 'Question 20',
@@ -849,7 +973,26 @@ Even an estimate is helpful. "About 3 to 4 times a week" is better than leaving 
   } else passed.push('Q20 — Headache Frequency');
 
   // -- Functional Impact (Q22 region / overall) --
-  const hasHeadacheFuncImpact = /\b(work|drive|screen|light|sound|dark|quiet|lay|rest|cancel|miss|unable|avoid|family|daily|routine|sleep|care|function|productivity|concentration)\b/i.test(text);
+  // False-pass guard: "work", "daily", "concentration", "social" all appear in Q19 CHECKBOX LABELS.
+  // Require a typed narrative sentence demonstrating actual functional impact.
+  const hasHeadacheFuncImpact = (() => {
+    // Require a genuine first-person typed statement about functional limitations
+    // "sleep it off" is not functional impact — it is a remedy. Require explicit impact language.
+    // Check for a sentence where the subject is "I" and the impact is on an activity/role.
+    // "I have to sleep it off" is a coping strategy, not functional impact.
+    // Require explicit impact on work, driving, family responsibilities, or social activities.
+    // Guard: require first-person subject for ALL alternatives — label text like "or cannot function)?" must not match
+    const firstPersonImpact = /(?:i (?:cannot|am unable to|had to (?!sleep)|was forced to|am forced to|cannot|can.t)|(?:miss|missed) (?:work|school)|i (?:cannot function|cannot work|cannot drive|lost my job|had to leave work|left work early|called (?:out|in sick))).{0,250}/i.test(text);
+    if (firstPersonImpact) return true;
+    // Also accept: Q17 answer that includes specific functional loss beyond just "sleep it off"
+    if (q17Answer) {
+      const episodeText = anyEpisode ? anyEpisode[0] : '';
+      // Must have an impact word in a sentence with first-person subject — not from Q12/Q19 checkbox labels
+      // "cannot function" appears in the Q12 question text ("isolate, or cannot function)?") — require "I" before it
+      return /\b(lie down|lay down|i cannot function|unable to work|have to stop|stop everything|i cannot drive|unable to drive|have to leave|bed|dark room)\b/i.test(episodeText);
+    }
+    return false;
+  })();
   if (!hasHeadacheFuncImpact) {
     gaps.push({
       section: 'Functional Impact',
@@ -896,9 +1039,54 @@ Describe what your actual service looked like on a typical day. That is what the
   } else passed.push('Section III — Military Duties');
 
   // -- Section V: Condition-specific narrative (onset, progression, symptoms) --
-  if (!hasTimeframe(text)) {
-    const v_snip = findAnswer(text, /section\s*V|condition|onset|how long|when did|history of/i);
-    const v_note = v_snip && wordCount(v_snip) > 4
+  // False-pass guard: Service dates in Section I (e.g. 1985-1993, 1986, 1987) will always match
+  // hasTimeframe(). We need a timeframe that appears INSIDE Section V answer blocks, not Section I.
+  const sectionVStart = text.search(/section\s*V\b|SECTION V\b/i);
+  const sectionVIStart = text.search(/section\s*VI\b|SECTION VI\b/i);
+  const sectionVText = sectionVStart !== -1
+    ? text.substring(sectionVStart, sectionVIStart !== -1 ? sectionVIStart : sectionVStart + 3000)
+    : '';
+  // Section V has labeled prompt fields with no client content if blank — count actual typed words
+  // Prompt lines like "When did symptoms first begin?", "Describe how the condition...", etc.
+  // If the client filled in answers, there will be substantive content beyond the prompts.
+  const sectionVAnswerWords = (() => {
+    // Section V has a very predictable structure: prompt lines followed by blank answer space.
+    // When a client fills it in, their answer appears immediately after a prompt line.
+    // Strategy: find lines that are NOT prompt/label lines and count those words.
+    const lines = sectionVText.split('\n');
+    const promptPatterns = [
+      // Section headers and form-level instructions
+      /^(section|document ref|page \d|complete this|mental health conditions|if you don|note:|leave the|remainder blank|considered, list)/i,
+      // Condition block labels
+      /^condition #?\d/i,
+      // Sub-prompt labels (A. B. C. etc.)
+      /^[A-F][.\)]/,
+      // Bullet points
+      /^[•●\-\*]/,
+      // Empty
+      /^\s*$/,
+      // All the known prompt question lines in Section V
+      /^(when did symptoms|did symptoms first occur|were symptoms documented|describe how the condition|describe:|describe \(citing|do your symptoms worsen|if so, how often|duration of flare|triggers\??$|describe a typical|limitations during|repeated use over|instability.*mechanical|giving way|locking or|popping or|recurrent sprains)/i,
+      /^(frequency:|severity:|duration:|associated symptoms|occupational limitations|physical activity|sleep:|concentration:|reliability|social or family|attendance|sequelae)/i,
+    ];
+    const answerLines = lines.filter(line => {
+      const trimmed = line.trim();
+      if (trimmed.length < 3) return false;
+      return !promptPatterns.some(p => p.test(trimmed));
+    });
+    return wordCount(answerLines.join(' '));
+  })();
+  // Require a timeframe in actual answer content — strip known prompt phrases that contain
+  // timeframe words ("during active service", "after service") from the timeframe check.
+  const sectionVTimeframeText = sectionVText
+    .replace(/20\d{2}-\d{2}-\d{2}/g, '')  // signature dates
+    .replace(/\d{1,2}\/\d{1,2}\/\d{4}/g, '')  // MM/DD/YYYY dates
+    .replace(/did symptoms first occur during active service[^\n]*/gi, '')  // prompt line
+    .replace(/were symptoms documented or treated during service[^\n]*/gi, '');  // prompt line
+  const hasSectionVAnswers = sectionVAnswerWords >= 25 && hasTimeframe(sectionVTimeframeText);
+  if (!hasSectionVAnswers) {
+    const v_snip = sectionVText.trim();
+    const v_note = v_snip.length > 200
       ? `Section V describes the conditions but does not include specific timeframes for when each condition began or how they developed over time. The doctor needs to know approximately when each condition started and whether it traces back to service.`
       : `Section V is incomplete. No timeframes or dates were provided for when conditions began. This section needs to be filled in for each condition being claimed.`;
     gaps.push({
@@ -916,7 +1104,10 @@ Complete this for every condition listed in this form. Each one needs its own ti
   } else passed.push('Section V — Condition Onset Timeframes');
 
   // -- Section V continued: symptom narrative depth --
-  const hasSymptomDepth = /\b(pain|ache|hurt|burning|numb|tingle|fatigue|dizzy|nausea|chest|breath|sweat|heart|pressure|cramp|spasm|stiff|swell|weak|limit|restrict|disturb|sleep|nightmare|flashback|avoid|isolat|irritab|anger|memory|concentrat|startle|trigger)\b/i.test(text);
+  // False-pass guard: symptom words like "pain", "nightmare", "avoid", "sleep" appear in Section IV
+  // (symptom inventory) which clients DO fill in. We need these words in Section V specifically.
+  const hasSymptomDepth = sectionVAnswerWords >= 20 &&
+    /\b(pain|ache|hurt|burning|numb|tingle|fatigue|dizzy|nausea|chest|breath|sweat|heart|pressure|cramp|spasm|stiff|swell|weak|limit|restrict|disturb|sleep|nightmare|flashback|avoid|isolat|irritab|anger|memory|concentrat|startle|trigger)\b/i.test(sectionVText);
   if (!hasSymptomDepth) {
     gaps.push({
       section: 'Section V',
@@ -931,7 +1122,22 @@ Complete this for every condition listed in this form. Each one needs its own ti
   } else passed.push('Section V — Current Symptoms');
 
   // -- Section VI: Mental Health History --
-  const hasMHKeywords = /\b(ptsd|anxiety|depression|trauma|mental|psychiatric|counseling|therapy|nightmare|flashback|hypervigilance|avoid|isolat|mood|anger|irritab|sleep|MST|military sexual|combat stress|moral injury)\b/i.test(text);
+  // False-pass guard: "PTSD", "anxiety", "depression", "trauma", "mental" all appear in the
+  // Section VI HEADER/INSTRUCTIONS ("Describe any history of: Anxiety, Depression, PTSD...").
+  // We must scope the check to text AFTER the Section VI prompt, looking for client-typed content.
+  const sectionVIText = sectionVIStart !== -1
+    ? text.substring(sectionVIStart, sectionVIStart + 2500)
+    : '';
+  // The Section VI prompt itself mentions all MH terms. A client answer would appear as a
+  // substantive paragraph after those instructions. Require at least 25 typed words in that section.
+  const sectionVIAnswerWords = (() => {
+    const stripped = sectionVIText
+      .replace(/describe any history|anxiety.*depression.*ptsd|onset.*origin|in.service stressors|post.service changes|functional impact/gi, '')
+      .replace(/section\s*VI[^\n]*/gi, '');
+    return wordCount(stripped.trim());
+  })();
+  const hasMHKeywords = sectionVIAnswerWords >= 25 &&
+    /\b(ptsd|anxiety|depression|trauma|nightmare|flashback|hypervigilance|avoid|isolat|mood|anger|irritab|panic|counsel|therapy|MST|combat stress)\b/i.test(sectionVIText);
   if (!hasMHKeywords) {
     const mh_snip = findAnswer(text, /section\s*VI|mental health|psychiatric|trauma|PTSD/i);
     const mh_note = mh_snip && wordCount(mh_snip) > 4
@@ -954,7 +1160,21 @@ Be specific about what you experienced. The doctor’s job is to connect your se
   } else passed.push('Section VI — Mental Health History');
 
   // -- Section VIII: Coexisting conditions interaction --
-  const hasCoexisting = /\b(secondary|related to|caused by|result of|aggravated by|worsened by|linked to|connection|because of|due to|from|stemming|coexist|interact|compound|combination)\b/i.test(text);
+  // False-pass guard: "aggravate or worsen", "overlapping symptoms", "cumulative" appear in the
+  // Section VIII BULLET PROMPTS ("Do any of your conditions aggravate or worsen another?").
+  // We need the client to have actually typed answers, not just the prompt text to match.
+  const sectionVIIIStart = text.search(/section\s*VIII\b|SECTION VIII\b/i);
+  const sectionVIIIText = sectionVIIIStart !== -1
+    ? text.substring(sectionVIIIStart, sectionVIIIStart + 2000)
+    : '';
+  const sectionVIIIAnswerWords = (() => {
+    const stripped = sectionVIIIText
+      .replace(/aggravate or worsen another condition|share overlapping symptoms|contribute to cumulative|provide the following explanations|do not speculate|to your knowledge|if yes.*explain/gi, '')
+      .replace(/section\s*VIII[^\n]*/gi, '');
+    return wordCount(stripped.trim());
+  })();
+  const hasCoexisting = sectionVIIIAnswerWords >= 15 &&
+    /\b(secondary|related to|caused by|result of|aggravated|worsened|linked|connection|because of|due to|stemming|compound|combination|makes.*worse|worse when|when.*flares?|affects? my|contributes? to)\b/i.test(sectionVIIIText);
   if (!hasCoexisting) {
     gaps.push({
       section: 'Section VIII',
