@@ -1,0 +1,146 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Semper Solutus Brand: Deep Navy + Gold */
+    --background: 222 47% 96%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 222 65% 25%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 42 77% 44%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 222 20% 92%;
+    --muted-foreground: 222 20% 45%;
+
+    --accent: 42 77% 44%;
+    --accent-foreground: 222 47% 11%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 222 20% 85%;
+    --input: 222 20% 85%;
+    --ring: 222 65% 25%;
+
+    --radius: 0.5rem;
+
+    /* Custom tokens */
+    --color-navy: #1e2d6b;
+    --color-navy-dark: #141f4e;
+    --color-gold: #c49a1a;
+    --color-gold-light: #e8b820;
+    --color-gold-pale: #fdf6dc;
+    --color-pass: #2d6a3f;
+    --color-pass-bg: #e8f5ec;
+    --color-fail: #8b1a1a;
+    --color-fail-bg: #fdf0f0;
+    --color-critical: #991b1b;
+    --color-moderate: #92400e;
+  }
+
+  .dark {
+    --background: 222 47% 7%;
+    --foreground: 222 15% 88%;
+
+    --card: 222 35% 11%;
+    --card-foreground: 222 15% 88%;
+
+    --popover: 222 35% 11%;
+    --popover-foreground: 222 15% 88%;
+
+    --primary: 42 77% 58%;
+    --primary-foreground: 222 47% 11%;
+
+    --secondary: 222 30% 20%;
+    --secondary-foreground: 222 15% 88%;
+
+    --muted: 222 25% 18%;
+    --muted-foreground: 222 15% 55%;
+
+    --accent: 42 77% 44%;
+    --accent-foreground: 222 47% 11%;
+
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 222 25% 22%;
+    --input: 222 25% 22%;
+    --ring: 42 77% 58%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', 'DM Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Drop zone */
+.drop-zone {
+  border: 2px dashed hsl(var(--border));
+  transition: all 0.2s ease;
+}
+.drop-zone.drag-over {
+  border-color: var(--color-navy);
+  background: hsl(222 65% 25% / 0.05);
+}
+
+/* Pass/Fail badges */
+.badge-pass {
+  background: var(--color-pass-bg);
+  color: var(--color-pass);
+  font-weight: 600;
+}
+.badge-fail {
+  background: var(--color-fail-bg);
+  color: var(--color-fail);
+  font-weight: 600;
+}
+.badge-critical {
+  background: #fef2f2;
+  color: var(--color-critical);
+}
+.badge-moderate {
+  background: #fffbeb;
+  color: var(--color-moderate);
+}
+
+/* Gap card */
+.gap-card {
+  border-left: 3px solid transparent;
+}
+.gap-card.critical {
+  border-left-color: var(--color-critical);
+}
+.gap-card.moderate {
+  border-left-color: var(--color-moderate);
+}
+
+/* Shimmer skeleton */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, hsl(var(--muted)) 25%, hsl(var(--muted-foreground) / 0.1) 50%, hsl(var(--muted)) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 4px;
+}
