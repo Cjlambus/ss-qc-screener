@@ -1,13 +1,20 @@
 import { execSync } from 'child_process';
 import { mkdirSync, rmSync, readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { pathToFileURL } from 'url';
 import os from 'os';
 
 // Primary: pure Node.js extraction via pdf-parse (works on any server, no system tools)
 async function extractWithPdfParse(buffer: Buffer): Promise<string> {
+  const tmpDir = join(os.tmpdir(), `qc_pdf_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+  mkdirSync(tmpDir, { recursive: true });
+  const pdfPath = join(tmpDir, 'input.pdf');
+  writeFileSync(pdfPath, buffer);
+
   try {
     const { PDFParse } = await import('pdf-parse') as any;
-    const parser = new PDFParse({ verbosity: 0, data: buffer });
+    const fileUrl = pathToFileURL(pdfPath).href;
+    const parser = new PDFParse({ verbosity: 0, url: fileUrl });
     await parser.load();
     const result = await parser.getText();
     // result is an object with pages array; concatenate all page text
@@ -19,6 +26,8 @@ async function extractWithPdfParse(buffer: Buffer): Promise<string> {
   } catch (e: any) {
     console.error('[pdf-ocr] pdf-parse failed:', e?.message);
     return '';
+  } finally {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
   }
 }
 
@@ -68,7 +77,7 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
     return pdfText;
   }
 
-  // 2. Fallback to system tools (local workspace only)
+  // 2. Fallback to system tools (local workspace)
   console.log('[pdf-ocr] pdf-parse returned short/empty text, trying system tools...');
   const sysText = await extractWithSystemTools(buffer);
   if (sysText && sysText.trim().length > 100) {
