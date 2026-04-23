@@ -6,6 +6,7 @@ export interface QCGap {
   issue: string;
   severity: "critical" | "moderate";
   guidance: string;
+  example?: string;  // Drafted first-person example the client can copy and adapt
 }
 
 export interface QCResult {
@@ -138,6 +139,28 @@ export function evaluateForm(text: string, formType: string): QCResult {
 
 // ─── MENTAL HEALTH ─────────────────────────────────────────────────────────────
 
+// Extract client context from the PDF for use in drafted examples
+function extractClientContext(text: string) {
+  const branch = /\b(usmc|marine corps|marines?|army|navy|air force|coast guard|national guard|reserves?)\b/i.exec(text)?.[0]?.toUpperCase() || 'the military';
+  const mos = (() => {
+    const m = /MOS[^:\n]{0,20}:\s*([^\n]{5,60})/i.exec(text);
+    return m ? m[1].trim() : null;
+  })();
+  const locations: string[] = [];
+  if (/\biraq\b/i.test(text)) locations.push('Iraq');
+  if (/\bkuwait\b/i.test(text)) locations.push('Kuwait');
+  if (/\begypt\b/i.test(text)) locations.push('Egypt');
+  if (/\bafghanistan\b/i.test(text)) locations.push('Afghanistan');
+  if (/\bkorea\b/i.test(text)) locations.push('Korea');
+  if (/\bokinawa\b/i.test(text)) locations.push('Okinawa');
+  if (/\bgermany\b/i.test(text)) locations.push('Germany');
+  // Pull meds the client already listed (for Section G hint)
+  const medMatch = /(?:Amlodipine|losartan|metformin|tadalafil|pantoprazole|furosemide|simvastatin|benzonatate|montelukast|tamsulosin|hydrochlorothiazide)/gi;
+  const medsFound = text.match(medMatch) || [];
+  const uniqueMeds = [...new Set(medsFound.map(m => m.charAt(0).toUpperCase() + m.slice(1).toLowerCase()))];
+  return { branch, mos, locations, meds: uniqueMeds };
+}
+
 function evaluateMentalHealth(
   text: string,
   raw: string,
@@ -146,67 +169,88 @@ function evaluateMentalHealth(
   gaps: QCGap[],
   passed: string[]
 ) {
-
-  // Pull all substantive client answer lines (non-boilerplate)
-  // We evaluate each answer block individually for quality
+  const ctx = extractClientContext(text);
+  const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
+  const firstLoc = ctx.locations[0] || 'overseas';
+  const branch = ctx.branch;
+  const mosStr = ctx.mos ? ctx.mos : 'their MOS';
 
   // ── A: Presenting Concerns ──
-  // Look for the client's symptom description — it appears near "describing current emotional/behavioral symptoms"
-  // In Martin's case: "my mental health could be better. I am depressed, anxiety, fatigue."
   const symptomsAnswer = answerBlocks.find(b =>
     /\b(depress|anxiet|fatigue|stress|anger|panic|mood|sleep|nightmar|flashback|isolat|numb|hypervigilant|ptsd|mental health)\b/i.test(b) &&
     !b.match(/^(section|describe|explain|list|note|specify|if yes)/i)
   ) || '';
 
-  // Symptoms must be: more than just a list, must include frequency/severity/how it shows up
   const symptomsHasDetail = wordCount(symptomsAnswer) >= 15 &&
     /\b(every|daily|always|sometimes|often|rarely|never|most|some|few|morning|night|week|day|hour|bad|worse|better|severe|mild|intense|constant|intermittent)\b/i.test(symptomsAnswer);
 
   if (!symptomsHasDetail) {
+    const whatTheyWrote = symptomsAnswer ? `"${symptomsAnswer.trim()}"` : 'nothing';
+    // Detect which symptoms they mentioned so we can build the example around them
+    const mentionsDepression = /depress/i.test(symptomsAnswer);
+    const mentionsAnxiety = /anxiet/i.test(symptomsAnswer);
+    const mentionsFatigue = /fatigue/i.test(symptomsAnswer);
+    const mentionsAnger = /anger|rage|angry|flip out/i.test(symptomsAnswer || allAnswerText);
+    const symptomList = [
+      mentionsDepression ? 'depression' : null,
+      mentionsAnxiety ? 'anxiety' : null,
+      mentionsFatigue ? 'fatigue' : null,
+      mentionsAnger ? 'anger/irritability' : null,
+    ].filter(Boolean);
+    const exampleSymptoms = symptomList.length > 0
+      ? symptomList
+      : ['depression', 'anxiety', 'fatigue'];
+
     gaps.push({
       section: 'Section A — Presenting Concerns',
       field: 'Current Symptoms Description',
-      issue: wordCount(symptomsAnswer) < 15
-        ? 'The symptoms description is too brief — simply listing condition names (e.g., "depression, anxiety, fatigue") is not enough.'
-        : 'The symptoms description does not include how often, how severe, or how these symptoms show up in daily life.',
+      issue: `What was written — ${whatTheyWrote} — is a label, not a description. The doctor needs to understand how each symptom actually shows up in your life: how often, how severe, and what it stops you from doing.`,
       severity: 'critical',
-      guidance: 'Client needs to describe each symptom in detail: How often does it happen? How severe is it (e.g., on a scale of 1–10, or using words like "mild," "moderate," "severe")? How does it affect their daily life? For example: "I feel depressed most days — I have no motivation to get out of bed, I stopped doing things I used to enjoy, and I have trouble keeping up at work."'
+      guidance: `For each symptom you listed, answer three questions: How often does it happen? How bad does it get? What does it stop you from doing? Do not just name the condition — walk the doctor through what it looks like on a typical day.`,
+      example: `Here is a draft you can use and adjust in your own words:
+
+"My depression hits most days. I wake up and have no motivation to do anything — not even basic things like getting out of bed or eating. I stopped doing things I used to enjoy. Some weeks I do not leave the house at all. My anxiety is constant. I am always on edge, expecting something bad to happen. I cannot sit still in public places and I avoid crowded areas entirely. My fatigue is not normal tiredness — even after a full night of sleep I wake up exhausted and feel like I am running on empty all day. ${mentionsAnger ? 'My anger comes out of nowhere. Small things set me off and I have to remove myself before I say or do something I will regret.' : ''}"
+
+Update this with your own words and specifics — the doctor needs your real experience, not a general description.`
     });
   } else {
     passed.push('Section A — Current Symptoms');
   }
 
   // ── A: Onset ──
-  // Look for the onset answer. The answer must appear AFTER the question label (not in the header).
-  // Martin's situation: "99-03" is his service dates in the header — NOT an onset timeframe.
-  // His actual onset answer is "when I get around big groups of people" which is a trigger, not onset.
-  // Strategy: find the text strictly AFTER the onset question label.
   const onsetIdx = text.search(/approximate onset and duration of symptoms/i);
   const onsetAfter = onsetIdx >= 0 ? text.substring(onsetIdx, onsetIdx + 600) : '';
-  const onsetAnswer = onsetAfter;
   const onsetHasTimeframe = hasTimeframe(onsetAfter) &&
-    // Must contain timeframe language that's actually about onset (not just header dates)
     /\b(20\d\d|19\d\d|\d+\s*(years?|months?)\s*ago|since\s*\d|in\s*\d{4}|during\s*(my\s*)?(deployment|service|active)|after\s*(service|deploy|discharge|getting out)|symptoms\s*(start|began|develop)|started\s*(around|in|after|during))\b/i.test(onsetAfter);
-  // Flag if the onset answer is off-topic (describing triggers/avoidance instead of when symptoms started)
   const onsetIsOffTopic = /\b(when i get|around people|stay away|try to avoid|crowds|gun range|try going)\b/i.test(onsetAfter);
+  // Try to pull what they actually wrote for the onset field
+  const onsetWritten = answerBlocks.find(b =>
+    /\b(when i get|around people|stay away|try to avoid|crowds|gun range|try going|since|started|began|after i|when i)\b/i.test(b) &&
+    wordCount(b) >= 5
+  ) || '';
 
   if (!onsetHasTimeframe || onsetIsOffTopic) {
+    const onsetNote = onsetIsOffTopic
+      ? `What was written — "${onsetWritten.trim()}" — describes a trigger situation, not when symptoms first started. This question is asking for a timeframe, not a trigger.`
+      : `No timeframe was provided for when symptoms began.`;
+
     gaps.push({
       section: 'Section A — Onset',
       field: 'Onset and Duration of Symptoms',
-      issue: onsetIsOffTopic
-        ? 'The onset answer describes a trigger or avoidance behavior — it does not answer when symptoms first started or how long they have been present.'
-        : 'The onset answer does not include a timeframe or year for when symptoms began.',
+      issue: onsetNote,
       severity: 'critical',
-      guidance: 'Client needs to state when their mental health symptoms first started — the approximate year or a timeframe (e.g., "around 2004 after returning from my first deployment to Iraq" or "symptoms started gradually about 2 years after I got out of the service"). They should also note whether symptoms have been continuous or come and go.'
+      guidance: `This field is asking: When did your mental health symptoms first start? It needs an approximate year or timeframe and should connect to your service or the period after. It should also note whether symptoms have been ongoing or come and go.`,
+      example: `Here is a draft format to follow — fill in your actual years and details:
+
+"My symptoms started around [year] — during / shortly after my deployment to ${firstLoc}. At first it was [describe what you first noticed, e.g., trouble sleeping, irritability, staying alert]. Over time it got worse. Since getting out of the service the symptoms have been [ongoing / getting worse / coming and going in waves]. It has been approximately [X] years since symptoms first started."
+
+If symptoms started gradually over time, say that. If there was a specific event that triggered the start, mention it here. The goal is to give the doctor a clear timeline.`
     });
   } else {
     passed.push('Section A — Onset and Duration');
   }
 
   // ── B: Trauma description ──
-  // Look for answers about the traumatic event
-  // Martin's answers are scattered across Section B and CAPS-5
   const traumaAnswers = answerBlocks.filter(b =>
     /\b(witness|fire|deploy|combat|struck|incoming|lightning|antenna|marine|hummer|formation|flipped|rushed|took|taking)\b/i.test(b)
   ).join(' ');
@@ -217,18 +261,42 @@ function evaluateMentalHealth(
   const traumaHasPhysical = /\b(fire|explosion|shot|blast|struck|hit|attack|crash|impact|incoming|wound|blood|witness|saw|watch|lightning|hummer|flipped)\b/i.test(traumaAnswers);
   const traumaHasDetail = traumaWords >= 30;
 
+  // Identify which specific events they mentioned so we can tailor the example
+  const mentionsLightning = /lightning|antenna|struck/i.test(traumaAnswers);
+  const mentionsIncomingFire = /incoming fire|took fire|taking fire/i.test(traumaAnswers);
+  const mentionsHummer = /hummer|flipped|formation/i.test(traumaAnswers);
+
   const traumaMissing: string[] = [];
-  if (!traumaHasLocation) traumaMissing.push('where it happened (country, base, specific location)');
-  if (!traumaHasDetail) traumaMissing.push('a detailed step-by-step account of what happened');
-  if (!traumaHasEmotional) traumaMissing.push('their emotional reaction — how did they feel during and after the event');
+  if (!traumaHasLocation) traumaMissing.push('the specific location where it happened');
+  if (!traumaHasDetail) traumaMissing.push('a step-by-step account of what happened');
+  if (!traumaHasEmotional) traumaMissing.push('your emotional and psychological reaction — how it felt in the moment and after');
 
   if (traumaMissing.length > 0) {
+    // Build event-specific prompts based on what they mentioned
+    const event1Note = mentionsLightning
+      ? 'You mentioned witnessing a Marine get struck by lightning while taking down an antenna.'
+      : mentionsHummer
+      ? 'You mentioned a Humvee in the formation flipping over and rushing to help.'
+      : 'You mentioned witnessing or being involved in a traumatic incident.';
+    const event2Note = mentionsIncomingFire
+      ? 'You also mentioned taking incoming fire during a deployment.'
+      : '';
+
     gaps.push({
       section: 'Section B — Trauma and Stress Exposure',
       field: 'Traumatic Event Description',
-      issue: `The trauma description is too brief and missing: ${traumaMissing.join('; ')}.`,
+      issue: `The events you described are mentioned but not explained. What is written is a sentence or two — the doctor needs a full account of each event including exactly where you were, what happened step by step, what you physically experienced, and how you felt. Missing: ${traumaMissing.join('; ')}.`,
       severity: 'critical',
-      guidance: 'Client needs to describe each traumatic event separately with full detail: Where were they (country, base, on patrol, in convoy, etc.)? What were they doing right before it happened? What exactly happened, step by step? What did they physically see, hear, or experience? How did they feel in the moment and in the days/weeks after? Each event should have its own paragraph.'
+      guidance: `Describe each traumatic event in its own paragraph. Cover all of these: Where were you (country, base, on patrol, in a convoy)? What were you doing right before it happened? What happened, step by step? What did you see, hear, smell, or physically feel? What did you do in the moment? How did you feel right after — and in the days and weeks that followed?`,
+      example: `${event1Note} ${event2Note} Here is a draft structure — use your actual memory and words:
+
+"Event 1: [${mentionsLightning ? 'The lightning strike' : 'The incident'}]
+We were [stationed at / on patrol in / operating out of] [location, e.g., Iraq, Kuwait]. It was [day/night/approximate time]. I was [describe what you were doing — your position, your job at that moment]. Without warning, [describe exactly what happened — e.g., 'one of the Marines was ordered to take down a radio antenna and was struck by lightning.' Or 'the vehicle in front of us hit something and rolled.']. I [describe what you did — ran over, took cover, froze, radioed for help]. I saw [describe what you physically saw — be specific]. In the moment I felt [describe: terrified, helpless, in shock, running on adrenaline]. For days after, I [couldn't stop thinking about it / had nightmares / couldn't sleep / stayed on edge expecting it to happen again].
+
+Event 2: [Taking Incoming Fire]
+This happened during my deployment to [location]. We were [describe the situation — on patrol, at a checkpoint, in the barracks]. [Describe what happened — where the fire came from, what you did, who was around you]. I [took cover / returned fire / helped someone]. Afterward I [describe how you felt — couldn't stop scanning for threats, had trouble sleeping, became hypervigilant]."
+
+Write each event in your own words. Length matters — the more detail you give the doctor, the stronger your case.`
     });
   } else {
     passed.push('Section B — Trauma Description');
@@ -243,21 +311,33 @@ function evaluateMentalHealth(
   const triggerHasResponse = wordCount(triggerAnswer) >= 10 &&
     /\b(feel|heart|sweat|shake|panic|leave|avoid|anger|rage|shut|freeze|physical|react|response)\b/i.test(triggerAnswer);
 
+  // Pull what they actually wrote about triggers
+  const triggerWritten = triggerAnswer || '';
+  const mentionsGunRange = /gun range/i.test(triggerWritten);
+  const mentionsCrowds = /crowd|big groups|around people/i.test(triggerWritten + allAnswerText);
+
   if (triggerYes && !triggerHasResponse) {
+    const triggerNote = triggerWritten
+      ? `What was written — "${triggerWritten.trim()}" — describes the situation that triggers distress, but does not explain what happens physically and emotionally when you encounter that trigger.`
+      : `No trigger response was described.`;
+
     gaps.push({
       section: 'Section B — Triggers',
       field: 'Trigger Response Description',
-      issue: 'Client indicated triggers cause distress but did not describe their physical or emotional response to those triggers.',
+      issue: triggerNote,
       severity: 'moderate',
-      guidance: 'Client needs to describe what happens when they encounter a trigger: What do they physically feel (heart racing, sweating, shaking, freezing up)? What do they do — do they leave, have a panic attack, go into a rage? How long does it take to calm down after being triggered?'
+      guidance: `The doctor needs to know what actually happens to you when you hit a trigger — not just what the trigger is. Describe your physical reaction (heart pounding, sweating, shaking, chest tightening), your emotional reaction (rage, panic, dread, shutting down), and what you do (leave the area, isolate, stay on high alert for hours). Also note how long it takes to calm down.`,
+      example: `Here is a draft — replace with your own experience:
+
+"${mentionsGunRange ? 'At the gun range, when people get too close or handle weapons carelessly,' : mentionsCrowds ? 'When I am in a large crowd or a loud public space,' : 'When I encounter something that reminds me of what I went through,'} my body immediately goes into a high-alert state. My heart starts pounding. I feel a wave of tension through my whole body and I have to get out of the situation immediately. Once I remove myself I [describe — stay on edge for hours / can't calm down / replay the moment over and over / go silent and withdraw]. It can take [amount of time — hours, the rest of the day] before I feel like myself again. Even knowing the threat is not real, I cannot stop my body from reacting as if it is."
+
+Update this with what you actually experience — the more specific you are, the better.`
     });
   } else {
     passed.push('Section B — Trigger Response');
   }
 
   // ── C: Prior diagnoses ──
-  // Find the diagnoses answer — in Martin's case the text is scrambled,
-  // but we check if any diagnosis word appears near the C section
   const cSectionText = findAnswer(text, /c\.\s*mental health history/i, 800);
   const hasDiagnosis = /\b(ptsd|depression|anxiety disorder|bipolar|mdd|major depressive|general anxiety|panic disorder|adjustment disorder|diagnosed|diagnosis)\b/i.test(cSectionText);
   const diagBlank = !hasDiagnosis && (
@@ -269,16 +349,24 @@ function evaluateMentalHealth(
     gaps.push({
       section: 'Section C — Mental Health History',
       field: 'Prior / Current Psychiatric Diagnoses',
-      issue: 'No formal psychiatric diagnosis is listed in Section C.',
+      issue: 'This field was left blank. The doctor needs to know whether you have ever received a formal mental health diagnosis — from the VA, a civilian provider, or even an informal screening.',
       severity: 'critical',
-      guidance: 'Client needs to list any mental health diagnoses they have received, including from the VA or any other provider. If they have not been formally diagnosed yet, they should write: "No formal diagnosis — filing based on symptoms consistent with PTSD as described throughout this form."'
+      guidance: `If you have been diagnosed with PTSD, depression, anxiety, or any other mental health condition, list each one here along with who diagnosed you (VA, private doctor, etc.). If you have never received a formal diagnosis, that is okay — write that clearly so the doctor knows you are filing based on symptoms.`,
+      example: `Choose whichever applies to you:
+
+Option A — If you have a diagnosis:
+"I was diagnosed with PTSD by [the VA / my primary care doctor / a private therapist] around [approximate year]. I have also been told I have [depression / anxiety / any other condition] — diagnosed by [who]."
+
+Option B — If you have never been formally diagnosed:
+"I have not received a formal psychiatric diagnosis. I am filing based on the symptoms I have described throughout this form, which are consistent with PTSD and depression as a result of my service."
+
+Either way, do not leave this blank — the doctor needs something in this field.`
     });
   } else {
     passed.push('Section C — Prior Diagnoses');
   }
 
   // ── C: Psychiatric medications ──
-  const hasPsychMedSection = /psychiatric medications\s*\(past or current\)/i.test(text);
   const psychMedAnswer = findAnswer(text, /psychiatric medications\s*\(past or current\)/i, 400);
   const hasPsychMedContent = /\b(sertraline|zoloft|prozac|fluoxetine|effexor|venlafaxine|trazodone|prazosin|hydroxyzine|buspirone|lithium|seroquel|quetiapine|risperdal|abilify|lexapro|escitalopram|citalopram|wellbutrin|bupropion|mirtazapine|amitriptyline|clonazepam|lorazepam|xanax|alprazolam|klonopin|none)\b/i.test(psychMedAnswer);
 
@@ -286,16 +374,29 @@ function evaluateMentalHealth(
     gaps.push({
       section: 'Section C — Mental Health History',
       field: 'Psychiatric Medications',
-      issue: 'The psychiatric medications field appears blank or has no content listed.',
+      issue: 'This field was left blank. The doctor needs to know about any medications specifically prescribed for your mental health — past or current — separate from your general medications.',
       severity: 'critical',
-      guidance: 'Client needs to list any mental health medications (past or current) by name. If they are not currently on any psychiatric medications, they should write "None — not currently prescribed any psychiatric medications." This is different from their regular medications listed in Section G.'
+      guidance: `List any medications prescribed for mental health conditions — things like antidepressants, sleep aids for PTSD nightmares, anxiety medication, or mood stabilizers. This is a separate list from your blood pressure or diabetes medications. If you have never been prescribed anything for mental health, write that clearly.`,
+      example: `Choose whichever applies to you:
+
+Option A — If you take or have taken mental health medications:
+"I am currently prescribed [medication name] for [depression / anxiety / sleep / PTSD]. I was previously prescribed [medication name] around [approximate year] but [stopped / it was changed to something else]."
+
+Option B — Common mental health medications for reference (ask your doctor or pharmacy if any of these sound familiar):
+For sleep/nightmares: Prazosin, Trazodone
+For depression/PTSD: Sertraline (Zoloft), Fluoxetine (Prozac), Venlafaxine (Effexor), Escitalopram (Lexapro)
+For anxiety: Hydroxyzine, Buspirone
+
+Option C — If you have never been prescribed mental health medications:
+"I have not been prescribed any psychiatric medications. I have been managing symptoms without medication."
+
+Do not leave this blank — even "None" is an acceptable answer.`
     });
   } else {
     passed.push('Section C — Psychiatric Medications');
   }
 
   // ── D: Combat/deployment details ──
-  // Only grab lines that are clearly the client's own words about deployment — exclude form labels and CAPS-5 boilerplate
   const deploymentAnswer = answerBlocks.filter(b =>
     /\b(deploy|egypt|kuwait|iraq|combat|tour|overseas|sent to|served|9\/11|counter|terrorist)\b/i.test(b) &&
     !b.match(/^(military factors|if yes, specify|high-stress|combat exposure|event type|did the event|did you personally|☐|2\.\s*event)/i) &&
@@ -303,19 +404,29 @@ function evaluateMentalHealth(
     wordCount(b) >= 5
   ).join(' ');
 
-  // Deployment details need MORE than just locations + dates + the word "combat tours"
-  // Must describe actual experiences: what they did, what they encountered, what was stressful
   const deploymentHasSubstantiveDetail = wordCount(deploymentAnswer) >= 20 &&
     /\b(patrol|IED|firefight|mortar|convoy|attack|encounter|mission|in combat|under fire|took fire|hostile|enemy|casualt|explosion|blast|shot at|wounded|witness|ambush|improvised|what happened|what i did|my role|my job|responsible for|specific|dangerous|intense|worst)\b/i.test(deploymentAnswer);
   const deploymentTooVague = !deploymentHasSubstantiveDetail;
+
+  // Pull what they wrote for context
+  const deployWritten = deploymentAnswer ? `"${deploymentAnswer.trim().substring(0, 150)}"` : 'nothing';
 
   if (deploymentTooVague) {
     gaps.push({
       section: 'Section D — Military Service and Post-Service Adjustment',
       field: 'Combat / Deployment Details',
-      issue: 'The deployment details are too brief — listing locations and dates alone is not enough.',
+      issue: `What was written — ${deployWritten} — only lists locations and the word "combat tours." The doctor needs to know what you actually experienced during those deployments: your role, what you were exposed to, and what the most stressful or dangerous situations were.`,
       severity: 'critical',
-      guidance: 'Client needs to describe what they actually experienced during each deployment: What was their specific role? Were they in active combat situations? What types of missions or situations did they encounter (patrols, IED exposure, taking fire, casualty care, etc.)? What was the most stressful or traumatic part of that deployment?'
+      guidance: `For each deployment, describe: What was your specific job and what did you do day to day? Were you in direct combat situations? What types of threats or incidents did you encounter (incoming fire, IED exposure, casualties, missions, etc.)? What was the most dangerous or mentally taxing part of that deployment?`,
+      example: `Here is a draft structure based on what you already listed (${locStr}) — fill in your actual experience:
+
+"Deployment 1 — ${ctx.locations[1] || 'Egypt/Kuwait'} (Post-9/11):
+I was deployed to [location] as a [${mosStr}]. My day-to-day responsibilities included [describe your actual duties — e.g., maintaining and operating radio communications systems, running comms on patrols and missions, coordinating with command during operations]. During this deployment I was exposed to [describe — incoming fire, mortar attacks, hostile situations, casualties, etc.]. The most stressful part was [be specific — e.g., being on-call during active engagements with no way to know when or where the next threat would come from].
+
+Deployment 2 — ${ctx.locations[ctx.locations.length - 1] || 'Iraq'} (${ctx.locations.includes('Iraq') ? 'Combat Tour' : 'Deployment'}):
+In [location], I [describe the situation on the ground — active combat, high-threat environment, specific incidents you witnessed or were part of]. The nature of this deployment was [describe — high operational tempo, continuous threat exposure, witnessing casualties, etc.]. This is where I experienced [reference your traumatic events from Section B]."
+
+Every deployment you listed should have its own description. You do not need exact dates — approximate timeframes are fine.`
     });
   } else {
     passed.push('Section D — Combat/Deployment Details');
@@ -326,33 +437,32 @@ function evaluateMentalHealth(
     /\b(friends?|family|network|support|community|church|group|help|veteran|counselor|therapist|wife|husband|spouse|partner|parent|sibling|neighbor)\b/i.test(b)
   ) || '';
   const supportHasDetail = wordCount(supportAnswer) >= 12 &&
-    /\b(help|talk|lean|rely|call|visit|meet|weekly|daily|often|close|strong|strong|spouse|parent|child|friend|battle buddy)\b/i.test(supportAnswer);
+    /\b(help|talk|lean|rely|call|visit|meet|weekly|daily|often|close|strong|spouse|parent|child|friend|battle buddy)\b/i.test(supportAnswer);
+  const supportWritten = supportAnswer ? `"${supportAnswer.trim()}"` : 'nothing';
 
   if (!supportHasDetail) {
     gaps.push({
       section: 'Section D — Military Service and Post-Service Adjustment',
       field: 'Current Support System',
-      issue: 'The support system answer is too vague — "good network of friends and family" does not provide enough detail.',
+      issue: `What was written — ${supportWritten} — is too general. Saying "good network of friends and family" does not tell the doctor who is actually in your life, how involved they are, or how your symptoms have affected those relationships.`,
       severity: 'moderate',
-      guidance: 'Client should describe who specifically is in their support system (spouse, parents, close friends, battle buddies, faith community, etc.), how often they interact with them, and whether those relationships have been affected by their mental health symptoms. If they feel isolated or have pulled away from people, they should note that too.'
+      guidance: `Describe specifically who is in your support system: Is it a spouse or partner? Close friends? Parents? Fellow veterans or battle buddies? A faith community? Then explain how often you actually interact with them and whether your mental health symptoms have changed those relationships — for better or worse.`,
+      example: `Here is a draft — adjust with your actual people and situation:
+
+"My support system includes [my wife / my parents / a few close friends / some guys I served with]. I [see them / talk to them] [daily / a few times a week / when things get really bad]. That said, my symptoms have made it harder to stay connected — I [pull away when I'm struggling / don't like to talk about what I'm going through / keep people at a distance because I don't want to burden them / have a shorter fuse and have pushed people away at times]. There are days where I isolate completely and don't reach out to anyone. Even with people I trust, I rarely open up about what is actually going on with me."
+
+If you feel like you do not have much support, say that — it is important information for the doctor.`
     });
   } else {
     passed.push('Section D — Support System');
   }
 
   // ── F: Functional Impact ──
-  // Martin's answer: "I have to walk away from people so I don't lose my mind and flip out on them"
-  // This is ONE sentence about ONE area (social/anger). Need work, sleep, relationships, daily.
-  // IMPORTANT: Only grab lines that are clearly the client's own words about functional impact.
-  // Exclude form labels, question text, scored scale questions, and employment status answers.
-  // A genuine functional impact answer will be a personal statement, not a form label or question.
   const funcAnswer = answerBlocks.filter(b =>
     /\b(work|sleep|relationship|family|daily|crowd|avoid|walk away|flip|lose|mind|function|activity|can't|cannot|struggle|hard|difficult)\b/i.test(b) &&
-    // Exclude form labels and question text (they contain characteristic question phrasing)
     !b.match(/^(section|describe how|any suicidal|work full|work part|employed|unemployed|retired|disabled|how much have|have these|interfered with|do reminders|describe current support|explain|if yes)/i) &&
-    // Must look like a personal statement, not a form question (no \u2640 checkboxes, no "how often")
     !/☐|\bYes\b.*\bNo\b|how often|how much|over the last|rate how|past month|past week|in the last/i.test(b) &&
-    wordCount(b) >= 8  // must be substantive
+    wordCount(b) >= 8
   ).join(' ');
 
   const funcAreas = {
@@ -363,17 +473,34 @@ function evaluateMentalHealth(
   };
   const funcCount = Object.values(funcAreas).filter(Boolean).length;
   const funcMissing = Object.entries(funcAreas).filter(([, v]) => !v).map(([k]) => k);
-  const funcWordsEnough = wordCount(funcAnswer) >= 20;
+  const funcWritten = funcAnswer ? `"${funcAnswer.trim().substring(0, 200)}"` : 'nothing';
 
-  if (funcCount < 3 || !funcWordsEnough) {
+  if (funcCount < 3 || wordCount(funcAnswer) < 20) {
+    const missedLabels: Record<string, string> = {
+      work: 'work and job performance',
+      sleep: 'sleep quality and nightmares',
+      relationships: 'relationships with family and friends',
+      daily: 'daily activities and things you now avoid',
+    };
+    const missingDescriptions = funcMissing.map(k => missedLabels[k]).join('; ');
+
     gaps.push({
       section: 'Section F — Functional Impact',
       field: 'Daily Life Impact',
-      issue: funcCount < 2
-        ? `The functional impact section only covers ${funcCount} life area${funcCount === 1 ? '' : 's'}. Missing: ${funcMissing.join(', ')}.`
-        : `The functional impact is too brief and needs more specific detail. Missing coverage of: ${funcMissing.join(', ')}.`,
+      issue: `What was written — ${funcWritten} — covers only ${funcCount} life area${funcCount === 1 ? '' : 's'} and is too brief. The doctor needs a complete picture of how symptoms affect every major part of your life. Missing: ${missingDescriptions}.`,
       severity: 'critical',
-      guidance: 'Client needs to describe how their mental health symptoms affect ALL of the following with specific examples:\n(1) Work — can they hold a job, do they miss days, has performance suffered?\n(2) Sleep — how many hours, how often do they wake up, do they have nightmares?\n(3) Relationships — how have things changed with family, friends, or a partner?\n(4) Daily activities — what can they no longer do or now actively avoid (stores, crowds, events, driving, etc.)?'
+      guidance: `Go through each area of your life and be specific about what has changed since your service. The doctor is not looking for a summary — they need concrete examples. If you work, how has that been affected? What does your sleep actually look like? How have your relationships changed? What do you now avoid that you used to do without thinking?`,
+      example: `Here is a draft covering each area — replace with your real experience:
+
+"Work: I currently [work full time / work part time / am unable to work due to symptoms]. ${!funcAreas.work ? '[Describe how symptoms affect your work — e.g., I have trouble concentrating and staying on task. I have a short fuse with coworkers. I have called out because I could not get myself out of the house. My performance has suffered.]' : ''}
+
+Sleep: [Describe your actual sleep — e.g., I get [X] hours on a good night but I wake up multiple times. I have nightmares [several times a week / almost every night] that are graphic and related to things I experienced in the service. I wake up in a cold sweat and cannot go back to sleep. I am exhausted all day regardless of how long I was in bed.]
+
+Relationships: [Describe how your symptoms have changed your relationships — e.g., I have pulled away from people I used to be close to. I have a short fuse and my [wife / family / friends] have noticed. I do not want to be a burden so I keep things to myself, which has created distance. Arguments happen more often than they used to.]
+
+Daily Life: [Describe what you now avoid or cannot do — e.g., I avoid crowded places like grocery stores, malls, and restaurants. Loud noises put me on edge immediately. I do not go to places where I feel like I cannot see the exits. Some days I do not leave the house at all.]"
+
+Fill in each section with what is actually true for you. More detail is always better here.`
     });
   } else {
     passed.push('Section F — Functional Impact (all areas covered)');
@@ -385,33 +512,59 @@ function evaluateMentalHealth(
     /\b(fight|fights|violent|aggress|assault|altercation|incident|physical)\b/i.test(b) &&
     wordCount(b) < 8
   );
+  const violenceWritten = violenceAnswer ? `"${violenceAnswer.trim()}"` : '';
+
   if (violenceYes && violenceAnswer && wordCount(violenceAnswer) < 8) {
     gaps.push({
       section: 'Section F — Functional Impact',
       field: 'History of Violence or Aggression',
-      issue: 'Client indicated a history of violence or aggression but only wrote one word — no context was provided.',
+      issue: `What was written — ${violenceWritten} — is a single word with no context. The doctor needs to understand when this happened, what triggered it, what the situation looked like, and how it has affected your life. Without that context, a one-word answer cannot be used to support your case.`,
       severity: 'critical',
-      guidance: 'Client needs to give more detail about the history of violence/aggression: When did this occur (during service or after)? What triggered it? Were there any legal consequences? Has this pattern continued? Has it affected their relationships or employment? This context helps the doctor understand how PTSD has impacted their behavior.'
+      guidance: `Describe the incidents with enough detail that a doctor can understand the pattern: When did they happen (during service, after getting out, or both)? What type of situations set you off? Were there legal consequences? Has this behavior gotten better, worse, or stayed the same? How has it affected your relationships or employment?`,
+      example: `Here is a draft structure — fill in your actual situation:
+
+"Since [getting out of the service / during and after service], I have had [a few / multiple / ongoing] incidents where I lost control of my anger. This typically happens when [describe the trigger — someone gets in my space unexpectedly / I am in a high-stress situation / I feel disrespected / a situation reminds me of something from my deployment]. During these incidents I [describe what happens — raise my voice / get into physical altercations / break things / have to remove myself before I do something]. The incidents that stand out are [describe one or two specific situations without naming others if possible — e.g., 'an altercation at a bar in 2008,' 'a confrontation with a coworker,' 'a fight at a family gathering']. ${violenceWritten.includes('fight') ? 'The fights I have been involved in were mostly [describe — bar fights, altercations where I felt threatened, situations that escalated because I could not de-escalate myself].' : ''} These incidents have [had no legal consequences / resulted in a [charge / warning / restraining order]] and have affected my [relationships / job / reputation in ways I am not proud of]."
+
+The doctor is not judging you — this context helps connect your behavior directly to PTSD and makes your case stronger.`
     });
   } else {
     passed.push('Section F — Violence/Aggression History');
   }
 
   // ── G: Other medical conditions ──
-  // Section G: Look strictly AFTER the medical conditions label to find what the client wrote.
-  // The conditions label and treatments label appear close together — grab only the text between them.
   const gCondIdx = text.search(/other \(non-mental health\) active medical conditions/i);
-  // Narrow to 200 chars after the label to avoid capturing later section titles (e.g. GAD-7 contains "Anxiety Disorder")
   const gNarrow = gCondIdx >= 0 ? text.substring(gCondIdx, gCondIdx + 200) : '';
   const medConditionsHasContent = /\b(hypertension|high blood pressure|diabetes|type 2|heart disease|coronary|kidney|renal|asthma|copd|sleep apnea|arthritis|neuropathy|tinnitus|gout|hepatitis|cancer|chronic pain|back pain|spine|disc|herniation|hypothyroid|hyperthyroid|cholesterol|hyperlipidemia|benign prostatic|bph|acid reflux|gerd|ibs|crohn|colitis)\b/i.test(gNarrow);
+
+  // Build medication hints based on what they listed
+  const medHints: string[] = [];
+  if (/amlodipine|losartan|lisinopril|hydrochlorothiazide/i.test(text)) medHints.push('Amlodipine / Losartan / Hydrochlorothiazide → likely High Blood Pressure (Hypertension)');
+  if (/metformin|glipizide|jardiance|ozempic|insulin/i.test(text)) medHints.push('Metformin → likely Type 2 Diabetes');
+  if (/simvastatin|atorvastatin|rosuvastatin|lipitor|crestor/i.test(text)) medHints.push('Simvastatin → likely High Cholesterol (Hyperlipidemia)');
+  if (/pantoprazole|omeprazole|famotidine|nexium/i.test(text)) medHints.push('Pantoprazole → likely Acid Reflux / GERD');
+  if (/tamsulosin|finasteride/i.test(text)) medHints.push('Tamsulosin → likely Benign Prostatic Hyperplasia (enlarged prostate)');
+  if (/furosemide|lasix/i.test(text)) medHints.push('Furosemide → often prescribed for fluid retention related to heart or kidney conditions');
+  if (/montelukast|albuterol|fluticasone/i.test(text)) medHints.push('Montelukast → likely Asthma or allergies');
+  if (/benzonatate/i.test(text)) medHints.push('Benzonatate → likely a respiratory condition (cough/bronchitis)');
 
   if (!medConditionsHasContent) {
     gaps.push({
       section: 'Section G — Current Medications and Medical Conditions',
       field: 'Other Active Medical Conditions',
-      issue: 'The non-mental health medical conditions field appears blank — the client lists medications (like Amlodipine, Metformin, Losartan) that indicate active medical conditions, but those conditions are not named.',
+      issue: `The medical conditions field was left blank, but your medications list tells a different story. You listed medications that are typically prescribed for specific conditions — those conditions need to be named here so the doctor has a complete medical picture.`,
       severity: 'moderate',
-      guidance: 'Client should list the medical conditions that go along with their current medications. For example: Amlodipine and Losartan suggest high blood pressure, Metformin suggests diabetes. They should write out each condition and its treatment so the doctor has a complete picture. If they are unsure what a medication is for, they can ask their pharmacy or prescribing doctor.'
+      guidance: `Look at each medication you listed and identify what condition it is treating. Your prescribing doctor or pharmacist can tell you if you are unsure. List each condition by name — the doctor needs to know about all of your active health issues, not just your mental health.`,
+      example: `Based on the medications you already listed, here are likely conditions to name — confirm with your doctor or pharmacy:
+
+${medHints.length > 0 ? medHints.map(h => `• ${h}`).join('\n') : '• Review each medication with your pharmacist to identify the condition it treats.'}
+
+Here is how to format your answer:
+"My current non-mental health medical conditions include:
+• [Condition name] — treated with [medication]
+• [Condition name] — treated with [medication]
+[Continue for each condition]"
+
+If you have conditions that do not have a medication (such as back pain, tinnitus, or a service-connected injury), list those too.`
     });
   } else {
     passed.push('Section G — Other Medical Conditions');
@@ -426,15 +579,35 @@ function evaluateMentalHealth(
   const capsHasEmotional = hasEmotionalDetail(caps5Answer);
   const capsHasDetail = capsWords >= 40;
 
+  // Pull what they wrote for context
+  const capsWritten = caps5Answer ? `"${caps5Answer.trim().substring(0, 200)}"` : 'nothing';
+  const capsEvent = mentionsHummer ? 'the Humvee rollover'
+    : mentionsLightning ? 'the lightning strike'
+    : mentionsIncomingFire ? 'taking incoming fire'
+    : 'the most distressing event from your service';
+
   if (!capsHasDetail || !capsHasEmotional) {
     gaps.push({
       section: 'Section 5 — CAPS-5 Traumatic Event',
       field: 'Most Distressing Traumatic Event — Full Detail',
       issue: capsWords < 40
-        ? 'The CAPS-5 traumatic event description is too brief — one or two sentences is not sufficient for this section.'
-        : 'The CAPS-5 event description is missing the emotional and psychological impact of the event.',
+        ? `What was written — ${capsWritten} — is one or two sentences. This is the single most important narrative section in the entire form. One or two sentences cannot carry the weight this section needs. The doctor needs a complete, detailed account.`
+        : `What was written describes the event but is missing your emotional and psychological reaction — how it felt in your body and mind in the moment, and how it has stayed with you since.`,
       severity: 'critical',
-      guidance: 'This is one of the most important sections in the form. The client needs to write a full, detailed account of their most distressing traumatic experience:\n• Where were they exactly (country, city, base name, on patrol, in a convoy)?\n• What were they doing right before it happened?\n• What happened step by step?\n• What did they physically see, hear, smell, or feel during the event?\n• What did they do during and immediately after?\n• How did they feel emotionally in the moment — and in the days, weeks, and months after?'
+      guidance: `This is the most important section in the form. Write everything you remember about the event that affected you most. Do not summarize — describe. Cover: exactly where you were, what you were doing right before it happened, what happened step by step, what you physically saw/heard/smelled/felt, what you did in the moment, and how you felt immediately after and in the weeks and months that followed.`,
+      example: `Based on what you mentioned (${capsEvent}), here is a full draft structure — fill in your actual memory:
+
+"The event that has stayed with me most is [name the event — e.g., the day a Marine in my unit was struck by lightning / the day our convoy took incoming fire / the day the vehicle in front of us rolled].
+
+We were in [location — country, base, on patrol, etc.]. It was [time of day / approximate date / how far into the deployment]. I was [describe what you were doing right before — your position, your job in that moment, who was around you].
+
+Then [describe what happened step by step — do not skip details. What did you see? What sounds did you hear? What did you smell? What did your body feel? What did you do — did you run toward it, take cover, freeze, call for help?].
+
+In the immediate moments after, I [describe what you did — rendered aid, tried to keep people calm, went into automatic mode, stood there in shock]. I remember [describe a specific detail that has stuck with you — something you saw, heard, or thought that you cannot get out of your mind].
+
+After that day, I [describe what changed — could not sleep / started having nightmares / became hypervigilant / could not talk about it / replayed it over and over]. It has been [weeks / months / years] and I still [describe how the memory still shows up for you today — intrusive thoughts, nightmares, feeling like it just happened, avoiding things that remind you of it]."
+
+Do not worry about making it sound perfect. Write it the way you would tell it to someone you trust — the doctor needs to understand what you went through, not a polished report.`
     });
   } else {
     passed.push('CAPS-5 — Traumatic Event Description');
@@ -519,14 +692,19 @@ export function generateEmailDraft(clientName: string, formType: string, gaps: Q
     ? `Your ${formType} Form — ${gaps.length} Update${gaps.length === 1 ? '' : 's'} Needed Before We Move Forward`
     : `Your ${formType} Form — A Few Sections Need More Detail`;
 
-  let body = `Hey ${firstName},\n\nThank you for getting your ${formType} form submitted. We went through it carefully and you are making great progress. Before we can move this forward to your medical review, we need you to go back and add more detail to a few sections. Your team will be sending the form back to you so you can update it and resubmit.\n\nHere is exactly what needs to be updated:\n\n`;
+  let body = `Hey ${firstName},\n\nThank you for getting your ${formType} form submitted. We went through it carefully and you are making great progress. Before we can move this forward to your medical review, we need you to go back and add more detail to a few sections. Your team will be sending the form back to you so you can update it and resubmit.\n\nFor each section below, we have included a draft of what you can write. These are starting points — update them with your actual experience and words. The doctor needs your story, not a template.\n\nHere is exactly what needs to be updated:\n\n`;
 
   for (let i = 0; i < gaps.length; i++) {
     const gap = gaps[i];
     body += `${i + 1}. ${gap.section} — ${gap.field}\n\n`;
-    body += `What we need: ${gap.issue}\n\n`;
-    body += `How to fix it: ${gap.guidance}\n\n`;
-    body += `─────────────────────────────\n\n`;
+    body += `${gap.issue}\n\n`;
+    if (gap.guidance) {
+      body += `What to add: ${gap.guidance}\n\n`;
+    }
+    if (gap.example) {
+      body += `--- Draft you can use ---\n${gap.example}\n--- End of draft ---\n\n`;
+    }
+    body += `─────────────────────────────────────────\n\n`;
   }
 
   body += `Once you have updated ${gaps.length === 1 ? 'this section' : 'these sections'} and resubmitted, we will review it right away and move you on to the next step.\n\nWe've got you.\n\nThe Semper Solutus Team`;

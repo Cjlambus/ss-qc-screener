@@ -20,6 +20,7 @@ interface QCGap {
   issue: string;
   severity: "critical" | "moderate";
   guidance: string;
+  example?: string;
 }
 
 interface EmailDraft {
@@ -184,10 +185,26 @@ export default function ReviewDetail() {
                 {expandedGap === i && (
                   <div className="px-5 pb-5 pt-0 border-t border-border bg-muted/30">
                     <p className="text-sm text-foreground mt-3 mb-3 leading-relaxed">{gap.issue}</p>
-                    <div className="p-3 rounded-lg border border-border bg-white">
-                      <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">CS Guidance</div>
-                      <p className="text-sm leading-relaxed">{gap.guidance}</p>
-                    </div>
+                    {gap.guidance && (
+                      <div className="p-3 rounded-lg border border-border bg-white mb-3">
+                        <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">What to Add</div>
+                        <p className="text-sm leading-relaxed">{gap.guidance}</p>
+                      </div>
+                    )}
+                    {gap.example && (
+                      <div className="rounded-lg border-2 bg-white overflow-hidden" style={{ borderColor: 'var(--color-gold)' }}>
+                        <div className="px-3 py-2 flex items-center justify-between" style={{ background: 'var(--color-gold)', opacity: 0.9 }}>
+                          <div className="text-xs font-bold text-white uppercase tracking-wide">Draft — Copy and Paste Into Your Form</div>
+                          <button
+                            className="text-xs text-white underline hover:no-underline"
+                            onClick={() => { navigator.clipboard.writeText(gap.example!); }}
+                          >
+                            Copy
+                          </button>
+                        </div>
+                        <pre className="text-sm leading-relaxed p-4 whitespace-pre-wrap font-sans text-foreground">{gap.example}</pre>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
