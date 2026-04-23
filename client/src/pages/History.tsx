@@ -1,10 +1,17 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
 import Layout from "@/components/Layout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, XCircle, Mail, FileText, ChevronRight, Inbox, AlertTriangle } from "lucide-react";
+import { CheckCircle2, XCircle, Mail, FileText, ChevronRight, Inbox, AlertTriangle, Copy, Check } from "lucide-react";
 import type { Review } from "@shared/schema";
+import { useState } from "react";
+import { apiRequest } from "@/lib/queryClient";
+
+interface EmailDraft {
+  subject: string;
+  body: string;
+}
 
 export default function History() {
   const [, navigate] = useLocation();
@@ -13,11 +20,29 @@ export default function History() {
   const batchParam = params.get("batch");
   const clientParam = params.get("client");
 
+  const [copiedSubject, setCopiedSubject] = useState(false);
+  const [copiedBody, setCopiedBody] = useState(false);
+
   // If coming from a multi-form batch submission, highlight those IDs
   const batchIds = batchParam ? batchParam.split(",").map(Number) : null;
 
   const { data: reviews, isLoading } = useQuery<Review[]>({
     queryKey: ["/api/reviews"],
+  });
+
+  // Fetch combined email draft for this batch
+  const { data: combinedDraft, isLoading: draftLoading } = useQuery<EmailDraft>({
+    queryKey: ["/api/batch-email", batchIds?.join(",")],
+    queryFn: async () => {
+      const res = await fetch("/api/batch-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewIds: batchIds }),
+      });
+      if (!res.ok) throw new Error("Failed to load combined draft");
+      return res.json();
+    },
+    enabled: !!batchIds && batchIds.length > 1,
   });
 
   // If batch mode, filter and sort batch reviews to the top
@@ -36,6 +61,18 @@ export default function History() {
   const batchForms = batchIds && reviews ? reviews.filter(r => batchIds.includes(r.id)) : [];
   const batchFailed = batchForms.filter(r => r.status === "fail").length;
   const batchPassed = batchForms.filter(r => r.status === "pass").length;
+  const showCombinedDraft = batchIds && batchIds.length > 1 && batchFailed > 0;
+
+  function copyText(text: string, type: "subject" | "body") {
+    navigator.clipboard.writeText(text);
+    if (type === "subject") {
+      setCopiedSubject(true);
+      setTimeout(() => setCopiedSubject(false), 1800);
+    } else {
+      setCopiedBody(true);
+      setTimeout(() => setCopiedBody(false), 1800);
+    }
+  }
 
   return (
     <Layout>
@@ -48,7 +85,7 @@ export default function History() {
         {/* Batch summary banner */}
         {batchIds && batchForms.length > 0 && (
           <div
-            className="mb-6 p-4 rounded-xl border flex items-start gap-3"
+            className="mb-4 p-4 rounded-xl border flex items-start gap-3"
             style={{
               borderColor: batchFailed > 0 ? "var(--color-fail)" : "var(--color-pass)",
               background: batchFailed > 0 ? "#fef2f2" : "#f0fdf4",
@@ -75,6 +112,81 @@ export default function History() {
             >
               Screen another client
             </Button>
+          </div>
+        )}
+
+        {/* Combined email draft panel */}
+        {showCombinedDraft && (
+          <div
+            className="mb-6 rounded-xl border overflow-hidden"
+            style={{ borderColor: "var(--color-navy)", borderOpacity: 0.2 }}
+          >
+            <div
+              className="px-5 py-3 flex items-center justify-between"
+              style={{ background: "var(--color-navy)" }}
+            >
+              <div className="flex items-center gap-2">
+                <Mail className="w-4 h-4 text-white" />
+                <span className="text-sm font-semibold text-white">Combined Coaching Email</span>
+              </div>
+              <span className="text-xs text-white opacity-70">All {batchFailed} failed form{batchFailed > 1 ? "s" : ""} · {batchGapTotal} gap{batchGapTotal !== 1 ? "s" : ""} total</span>
+            </div>
+
+            {draftLoading ? (
+              <div className="p-5 text-sm text-muted-foreground">Building combined email draft...</div>
+            ) : combinedDraft ? (
+              <div className="p-5 space-y-4">
+                <p className="text-xs text-muted-foreground">
+                  Copy this single email — it covers all gaps across all submitted forms. Send from charles@sempersolutus.com, then unlock each failed PandaDoc for the client to resubmit.
+                </p>
+
+                {/* Subject line */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Subject</label>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs gap-1.5 px-2"
+                      onClick={() => copyText(combinedDraft.subject, "subject")}
+                    >
+                      {copiedSubject ? <Check className="w-3 h-3 text-green-600" /> : <Copy className="w-3 h-3" />}
+                      {copiedSubject ? "Copied" : "Copy"}
+                    </Button>
+                  </div>
+                  <div
+                    className="rounded-lg px-3 py-2 text-sm font-medium border"
+                    style={{ background: "#f8f9fc", borderColor: "#e2e5ed" }}
+                  >
+                    {combinedDraft.subject}
+                  </div>
+                </div>
+
+                {/* Email body */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Email Body</label>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs gap-1.5 px-2"
+                      onClick={() => copyText(combinedDraft.body, "body")}
+                    >
+                      {copiedBody ? <Check className="w-3 h-3 text-green-600" /> : <Copy className="w-3 h-3" />}
+                      {copiedBody ? "Copied" : "Copy"}
+                    </Button>
+                  </div>
+                  <textarea
+                    readOnly
+                    value={combinedDraft.body}
+                    rows={20}
+                    className="w-full rounded-lg px-3 py-2.5 text-xs font-mono border resize-none focus:outline-none"
+                    style={{ background: "#f8f9fc", borderColor: "#e2e5ed", lineHeight: "1.6" }}
+                    onClick={e => (e.target as HTMLTextAreaElement).select()}
+                  />
+                </div>
+              </div>
+            ) : null}
           </div>
         )}
 

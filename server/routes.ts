@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import multer from "multer";
 import { storage } from "./storage";
-import { detectFormType, evaluateForm, generateEmailDraft } from "./qc-engine";
+import { detectFormType, evaluateForm, generateEmailDraft, generateCombinedEmailDraft } from "./qc-engine";
 import { extractTextFromPDF } from "./pdf-ocr";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -95,6 +95,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json({ success: true, review: updated });
     } catch (err) {
       res.status(500).json({ error: "Failed to update email status" });
+    }
+  });
+
+  // Combined email draft for a batch of reviews (multiple forms, one email)
+  app.post("/api/batch-email", (req, res) => {
+    try {
+      const { reviewIds } = req.body as { reviewIds: number[] };
+      if (!reviewIds || !Array.isArray(reviewIds) || reviewIds.length === 0) {
+        return res.status(400).json({ error: "reviewIds array required" });
+      }
+      const reviews = reviewIds.map(id => storage.getReview(id)).filter(Boolean) as any[];
+      if (reviews.length === 0) return res.status(404).json({ error: "No reviews found" });
+
+      const clientName = reviews[0].clientName;
+      const forms = reviews.map((r: any) => ({
+        formType: r.formType,
+        gaps: JSON.parse(r.gapsJson || "[]"),
+      }));
+
+      const draft = generateCombinedEmailDraft(clientName, forms);
+      res.json(draft);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to generate combined email" });
     }
   });
 

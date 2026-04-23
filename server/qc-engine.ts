@@ -1219,3 +1219,48 @@ export function generateEmailDraft(clientName: string, formType: string, gaps: Q
 
   return { subject, body };
 }
+
+// ─── COMBINED EMAIL DRAFT (all forms, one email) ─────────────────────────────
+
+export function generateCombinedEmailDraft(
+  clientName: string,
+  forms: { formType: string; gaps: QCGap[] }[]
+): { subject: string; body: string } {
+  const firstName = clientName.split(' ')[0];
+
+  // Only include forms that actually failed
+  const failedForms = forms.filter(f => f.gaps.length > 0);
+  const totalGaps = failedForms.reduce((sum, f) => sum + f.gaps.length, 0);
+  const formNames = failedForms.map(f => f.formType).join(', ');
+
+  const subject = failedForms.length === 1
+    ? `Your ${failedForms[0].formType} Form — ${totalGaps} Update${totalGaps === 1 ? '' : 's'} Needed Before We Move Forward`
+    : `Your Screening Forms — A Few Sections Need More Detail`;
+
+  let body = `Hey ${firstName},\n\nThank you for getting your screening forms submitted. We went through them carefully and you are making great progress. Before we can move this forward to your medical review, we need you to go back and add more detail to a few sections across your forms. Your team will be sending each form back to you so you can update and resubmit.\n\nFor each section below, we have included a draft of what you can write. These are starting points — update them with your actual experience and words. The doctor needs your story, not a template.\n\nHere is exactly what needs to be updated:\n\n`;
+
+  let itemNumber = 1;
+
+  for (const form of failedForms) {
+    body += `${'═'.repeat(45)}\n`;
+    body += `${form.formType.toUpperCase()} FORM\n`;
+    body += `${'═'.repeat(45)}\n\n`;
+
+    for (const gap of form.gaps) {
+      body += `${itemNumber}. ${gap.section} — ${gap.field}\n\n`;
+      body += `${gap.issue}\n\n`;
+      if (gap.guidance) {
+        body += `What to add: ${gap.guidance}\n\n`;
+      }
+      if (gap.example) {
+        body += `--- Draft you can use ---\n${gap.example}\n--- End of draft ---\n\n`;
+      }
+      body += `─────────────────────────────────────────\n\n`;
+      itemNumber++;
+    }
+  }
+
+  body += `Once you have updated ${totalGaps === 1 ? 'this section' : 'these sections'} and resubmitted the forms, we will review them right away and move you on to the next step.\n\nWe've got you.\n\nThe Semper Solutus Team`;
+
+  return { subject, body };
+}
