@@ -617,70 +617,358 @@ Do not worry about making it sound perfect. Write it the way you would tell it t
 // ─── MSK ──────────────────────────────────────────────────────────────────────
 
 function evaluateMSK(text: string, raw: string, gaps: QCGap[], passed: string[]) {
+  const ctx = extractClientContext(text);
+  const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
+
+  // -- IV-A: Onset --
   if (!hasTimeframe(text)) {
-    gaps.push({ section: 'Section IV-A', field: 'Onset / History', issue: 'No timeframe or year provided for when the condition began.', severity: 'critical', guidance: 'Client needs: approximate year or timeframe, whether it started during or after service, what activity triggered it, and whether it came on suddenly or gradually.' });
-  } else passed.push('Section IV-A — Onset');
+    const onsetIdx = text.search(/onset|when did|how long|history of/i);
+    const onsetSnip = onsetIdx >= 0 ? text.substring(onsetIdx, onsetIdx + 200).trim() : '';
+    const onsetNote = onsetSnip && wordCount(onsetSnip) > 3
+      ? `What was written does not include a timeframe for when the condition began. The doctor needs to know when it started and how it developed.`
+      : `No onset information was provided. This field was left blank or skipped.`;
 
+    gaps.push({
+      section: 'Section IV-A',
+      field: 'Onset and History',
+      issue: onsetNote,
+      severity: 'critical',
+      guidance: `State when this condition first started: the approximate year or timeframe, whether it began during or after service, what activity or incident triggered it, and whether it came on suddenly or built up gradually over time.`,
+      example: `Here is a draft format to follow:
+
+"This condition started around [year]. I was [stationed at / deployed to / back home] at the time. The pain began [suddenly after a specific incident / gradually over time]. I first noticed it when [describe the situation: lifting during a training exercise, carrying heavy gear on a long patrol, a fall or vehicle incident, physical training]. At the time I [was / was not] treated by a medic or doctor. Since then the condition has [stayed the same / gotten progressively worse / flared up in cycles]."
+
+If the injury happened during service, say it clearly: "This started while I was on active duty" or "This began during my deployment to [location]."`
+    });
+  } else passed.push('Section IV-A -- Onset');
+
+  // -- IV-C: Pain location --
   if (!hasLocation(text)) {
-    gaps.push({ section: 'Section IV-C', field: 'Pain Location and Radiation', issue: 'No specific body location or radiation pattern described.', severity: 'critical', guidance: 'Client needs to specify exactly where the pain is and whether it travels anywhere (e.g., down the leg into the foot).' });
-  } else passed.push('Section IV-C — Pain Location');
+    gaps.push({
+      section: 'Section IV-C',
+      field: 'Pain Location and Radiation',
+      issue: `No specific body location is described. The doctor cannot evaluate the condition without knowing exactly where the pain is and whether it travels to other areas.`,
+      severity: 'critical',
+      guidance: `Describe the exact location of the pain, which side (left, right, or both), whether it radiates or travels anywhere else, and what type of pain it is (sharp, dull, burning, aching, stabbing).`,
+      example: `Here is a draft:
 
-  const funcText = text.match(/\b(work|walk|stand|sit|lift|carry|drive|sleep|daily|activity|routine)\b/gi);
+"The pain is located in my [lower back / neck / right knee / left shoulder / both hips]. It is on the [left / right / both sides]. The pain [stays in one location / travels down into my leg toward my foot / radiates into my shoulder and down my arm]. It feels [sharp / dull and aching / burning / like constant pressure / like electric shocks]. It is worse [in the morning / after sitting for long periods / after standing / after physical activity] and there is [no position that fully relieves it]. On a typical day the pain is around a [X] out of 10. On a bad day it reaches [X] out of 10."
+
+Be as specific as you can. The more precisely you describe the location and character of the pain, the more the doctor can connect it to your service injury.`
+    });
+  } else passed.push('Section IV-C -- Pain Location');
+
+  // -- Section V: Functional Impact --
+  const funcText = text.match(/\b(work|walk|stand|sit|lift|carry|drive|sleep|daily|activity|routine|bend|climb|stairs|reach|dress|shower|cook|shop|exercise|recreation)\b/gi);
   if (!funcText || funcText.length < 3) {
-    gaps.push({ section: 'Section V', field: 'Functional Impact', issue: 'Functional impact section is incomplete — fewer than 3 life areas described.', severity: 'critical', guidance: 'Client needs to describe how this condition affects at least 3 areas: work/employment, daily household tasks, recreational activities, mobility/transportation, and sleep.' });
-  } else passed.push('Section V — Functional Impact');
+    gaps.push({
+      section: 'Section V',
+      field: 'Functional Impact',
+      issue: `The functional impact section is too brief. The doctor needs to understand what this condition actually prevents you from doing day to day, not just that it causes pain.`,
+      severity: 'critical',
+      guidance: `Describe how this condition affects at least three areas of your life: ability to work, daily household tasks, mobility, recreational or physical activities you used to do, and sleep. Be specific about what you can no longer do or what now requires help.`,
+      example: `Here is a draft:
+
+"Work: My condition affects my ability to [sit for long periods / stand for long periods / lift anything over [X] pounds / concentrate due to constant pain]. I have [missed work / had to change jobs / reduced my hours / become unable to work] because of this.
+
+Daily Tasks: I struggle with [bending down / climbing stairs / getting in and out of a vehicle / reaching overhead / carrying groceries / yard work / cooking / dressing myself]. Things that were routine now take much longer or require help.
+
+Sleep: The pain [prevents me from getting comfortable / wakes me multiple times a night]. I get about [X] hours on a good night. I have to [sleep in a specific position / use extra pillows / get up and move around] just to manage the pain.
+
+Recreation and Physical Activity: I used to [run / work out / play sports / hike / fish]. I can no longer do [describe what you gave up] at all, or I can only do limited versions of these activities before the pain stops me."
+
+Fill in each section with what is actually true for you.`
+    });
+  } else passed.push('Section V -- Functional Impact');
+
+  // -- Symptom Progression --
+  const hasProgression = /\b(better|worse|same|worsening|improving|progressing|deteriorating|flare|constant|chronic|increasing|decreasing|spread|aggravat)\b/i.test(text);
+  if (!hasProgression) {
+    gaps.push({
+      section: 'Section IV-B',
+      field: 'Symptom Progression',
+      issue: `No description of whether the condition has changed over time. The doctor needs to know if it is getting worse, staying the same, or fluctuating.`,
+      severity: 'moderate',
+      guidance: `Describe the direction of your symptoms since they started: are they getting worse, staying the same, or cycling through flare-ups and relief? What makes them worse? Has the pain spread?`,
+      example: `Here is a draft:
+
+"Since this condition started, it has [gotten progressively worse / stayed about the same / fluctuated with good and bad periods]. Things that trigger a flare-up include [long drives, sitting at a desk for more than an hour, physical labor, cold weather, stress]. During a flare-up the pain goes from a [X] to a [X] out of 10 and I am [unable to work / forced to rest / relying on medication to get through the day]. The condition has [spread to include my [area] / stayed in the same location]. Nothing has given me consistent long-term relief."`
+    });
+  } else passed.push('Section IV-B -- Symptom Progression');
 }
 
 // ─── GI ───────────────────────────────────────────────────────────────────────
 
 function evaluateGI(text: string, raw: string, gaps: QCGap[], passed: string[]) {
+
+  // -- Section III: Onset --
   if (!hasTimeframe(text)) {
-    gaps.push({ section: 'Section III', field: 'Onset / History', issue: 'No timeframe or date provided for when GI condition began.', severity: 'critical', guidance: 'Client needs to provide an approximate year or timeframe for when symptoms started.' });
+    gaps.push({
+      section: 'Section III',
+      field: 'Onset and History',
+      issue: `No timeframe was provided for when GI symptoms started. The doctor needs to know when this condition began and whether it connects to your service.`,
+      severity: 'critical',
+      guidance: `Provide an approximate year or timeframe for when GI symptoms first started. State whether symptoms began during service or after, and note any possible connection to deployment diet, stress, medications, or environment.`,
+      example: `Here is a draft:
+
+"My GI symptoms started around [year]. At the time I was [on active duty / recently discharged / deployed to (location)]. I first noticed [describe the first symptom — cramping, frequent urgent bathroom trips, constant heartburn, stomach pain]. The symptoms [came on suddenly / built up gradually over several months]. I believe this may be connected to [describe a possible cause if you know one: MRE diet during deployment, high stress environment, medications prescribed during service, contaminated water exposure, drastic change in diet]. Since then the symptoms have [stayed the same / gotten progressively worse / come and go in flare-ups]."`
+    });
   } else passed.push('Section III — Onset');
 
+  // -- Section III: Symptom Description --
+  const hasGISymptoms = /\b(cramp|bloat|nausea|diarrhea|constipation|reflux|heartburn|pain|bleed|urgency|gas|vomit|indigestion|belch|regurgitat|loose stool|bowel|stomach|abdomen|gut|irritable)\b/i.test(text);
+  if (!hasGISymptoms) {
+    gaps.push({
+      section: 'Section III',
+      field: 'Symptom Description',
+      issue: `The GI symptoms are not described specifically. The doctor needs to know what is actually happening in your body — not just that you have a stomach issue. The type, frequency, and triggers all matter.`,
+      severity: 'moderate',
+      guidance: `List each specific GI symptom you experience. Describe how often it happens, what triggers or worsens it, and what (if anything) gives relief. Do not generalize — the more specific you are, the clearer the medical picture.`,
+      example: `Here is a draft:
+
+"My GI symptoms include [choose all that apply: cramping, urgent or uncontrollable bowel movements, bloating, acid reflux, heartburn, nausea, chronic diarrhea, constipation, gas, bleeding]. These symptoms occur [daily / several times a week / in flare-ups that last [X] days at a time]. They are triggered or made worse by [certain foods, stress, eating too fast, alcohol, spicy or fatty food, lying down after eating, anxiety]. I have tried managing them with [diet changes, over-the-counter medication, prescription medication, avoiding trigger foods] with [limited / moderate / no lasting] success."`
+    });
+  } else passed.push('Section III — Symptom Description');
+
+  // -- Section IV: Severity Rating --
   if (!/\b(mild|moderate|severe)\b/i.test(text)) {
-    gaps.push({ section: 'Section IV', field: 'Severity Rating', issue: 'No severity level indicated (Mild / Moderate / Severe).', severity: 'critical', guidance: 'Client needs to select Mild, Moderate, or Severe to describe how intense their GI symptoms are.' });
+    gaps.push({
+      section: 'Section IV',
+      field: 'Severity Rating',
+      issue: `No severity level was selected or written in. The form requires Mild, Moderate, or Severe. Without this the doctor cannot gauge how significantly this condition affects your daily functioning.`,
+      severity: 'critical',
+      guidance: `Choose the severity level that honestly describes how GI symptoms affect your daily life. Mild means you can manage them. Moderate means they regularly disrupt your routine. Severe means they frequently prevent you from functioning normally.`,
+      example: `Choose the one that fits and explain it briefly:
+
+Mild: "I would rate my GI condition as Mild. Symptoms are present but I can usually manage them without missing work or major changes to my daily routine."
+
+Moderate: "I would rate my GI condition as Moderate. Symptoms are frequent enough that I have to plan around them — I always need to know where the nearest bathroom is, I avoid certain foods and situations, and flare-ups regularly interrupt my work and daily life."
+
+Severe: "I would rate my GI condition as Severe. On bad days I am unable to leave the house. The pain, urgency, and unpredictability are debilitating — I have missed work, social events, and appointments because of this condition on a regular basis."`
+    });
   } else passed.push('Section IV — Severity');
 
-  if (!/\b(cramp|bloat|nausea|diarrhea|constipation|reflux|heartburn|pain|bleed|urgency|gas)\b/i.test(text)) {
-    gaps.push({ section: 'Section III', field: 'Symptom Description', issue: 'GI symptoms are not described in enough detail.', severity: 'moderate', guidance: 'Client should describe specific symptoms: type, frequency, and what makes them worse or better.' });
-  } else passed.push('Section III — Symptom Description');
+  // -- Functional Impact --
+  const hasGIFuncImpact = /\b(work|daily|routine|avoid|cancel|miss|unable|bathroom|emergency|accident|leave|eat|diet|social|plan|embarrass|isolat|sleep|travel)\b/i.test(text);
+  if (!hasGIFuncImpact) {
+    gaps.push({
+      section: 'Section V',
+      field: 'Functional Impact',
+      issue: `There is no description of how GI symptoms affect daily life, work, or social activities. The doctor needs to understand the real-world impact of this condition, not just the physical symptoms.`,
+      severity: 'critical',
+      guidance: `Describe how your GI condition affects your ability to work, socialize, travel, eat normally, and plan your day. Be specific about situations you now avoid or activities you have had to give up.`,
+      example: `Here is a draft:
+
+"My GI condition affects my daily life significantly. I [have to plan every outing around bathroom access / cannot eat a full meal before work / avoid restaurants, travel, and social situations because of unpredictable symptoms]. At work, [I have had to leave meetings suddenly / I avoid eating lunch on shift / I have called out due to a flare-up]. Travel is extremely difficult because [I cannot rely on bathroom access / stress makes symptoms worse]. I have stopped accepting certain social invitations because I never know when symptoms will hit. Flare-ups [happen without warning and can last hours], which makes it impossible to commit to normal activities with confidence."`
+    });
+  } else passed.push('Section V — GI Functional Impact');
 }
 
 // ─── HEADACHES ────────────────────────────────────────────────────────────────
 
 function evaluateHeadaches(text: string, raw: string, gaps: QCGap[], passed: string[]) {
-  if (!hasTimeframe(text.substring(0, 600))) {
-    gaps.push({ section: 'Question 1', field: 'Headache History Timeframe', issue: 'No timeframe provided for when headaches began.', severity: 'critical', guidance: 'Client needs to state approximately when headaches started — the year, or whether it was during or after service.' });
+  const ctx = extractClientContext(text);
+  const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
+
+  // -- Q1: Timeframe / when headaches began --
+  const q1Snip = text.substring(0, 800);
+  if (!hasTimeframe(q1Snip)) {
+    const q1Written = q1Snip.replace(/\s+/g, ' ').trim();
+    const q1Note = q1Written.length > 40
+      ? `The response does not include a timeframe for when headaches first started. The doctor needs an approximate year or period and whether they began during service or after.`
+      : `No timeframe was provided for when headaches began. This field needs to be completed.`;
+    gaps.push({
+      section: 'Question 1',
+      field: 'Headache History and Timeframe',
+      issue: q1Note,
+      severity: 'critical',
+      guidance: `State when headaches first started: the approximate year or timeframe, whether it was during or after service, what was happening at the time (deployment, training, a specific incident), and whether they came on suddenly or gradually.`,
+      example: `Here is a draft:
+
+"My headaches started around [year]. At the time I was [on active duty / recently separated / deployed to ${locStr}]. They began [suddenly after a specific incident such as a blast, head injury, or vehicle rollover / gradually over time during [deployment or training period]]. I first noticed them when [describe the situation — after an IED detonation nearby, after a fall, after a period of extreme stress during a particular assignment]. Before that I rarely had headaches. They have [continued / gotten progressively worse] since then."
+
+If there was a specific incident — a blast, a fall, a vehicle accident — mention it clearly here. That connection to service is what the doctor needs to document.`
+    });
   } else passed.push('Q1 — Headache History Timeframe');
 
-  if (!/\b(severe|moderate|mild|debilitating|intense|throb|pound|nausea|vomit|sensitive|light|sound|aura|vision|blur)\b/i.test(text)) {
-    gaps.push({ section: 'Question 17', field: 'Headache Severity and Symptoms', issue: 'Headache description lacks specific symptom detail, severity, and duration.', severity: 'critical', guidance: 'Client needs: severity level, accompanying symptoms (nausea, light sensitivity, vision changes), typical duration, and what they cannot do during an episode.' });
+  // -- Q3: If cause was injury, needs location and detail --
+  const injuryMentioned = /\b(injury|injur|blast|explosion|IED|concussion|head trauma|TBI|fall|hit|struck|vehicle|rollover|accident)\b/i.test(text);
+  if (injuryMentioned) {
+    const injuryDetail = /\b(head|neck|skull|forehead|temple|jaw|face|behind|occipital|frontal|back of|top of)\b/i.test(text);
+    if (!injuryDetail) {
+      gaps.push({
+        section: 'Question 3',
+        field: 'Injury Location and Detail',
+        issue: `An injury or incident is mentioned but no detail is given about where on the body the injury occurred or exactly what happened. The doctor needs to know what type of injury it was, where it made contact, and how the incident occurred.`,
+        severity: 'critical',
+        guidance: `Describe where on the body the injury occurred (head, neck, face), what caused it (blast wave, struck head on vehicle interior, fell and hit ground), and what happened physically at the moment of injury. Include whether you lost consciousness, experienced confusion, ringing in the ears, or were evaluated by a medic.`,
+        example: `Here is a draft:
+
+"The injury occurred during [describe the situation — a vehicle rollover, an IED blast, a training fall, hand-to-hand combat]. I [hit my head on / was thrown against / experienced the blast wave through] [the vehicle interior / the ground / the surrounding structure]. The point of contact was [my forehead / the back of my head / my jaw / the top of my skull]. Immediately after I experienced [ringing in my ears / confusion / brief loss of consciousness / severe headache / blurred vision / nausea]. I [was / was not] evaluated by a medic at the time. My headaches began [immediately / within days / within weeks] of this incident."`
+      });
+    } else passed.push('Q3 — Injury Location and Detail');
+  }
+
+  // -- Q17: Severity, accompanying symptoms, duration, impact --
+  const hasSeveritySymptoms = /\b(severe|moderate|mild|debilitating|intense|throb|pound|nausea|vomit|sensitive|light|sound|aura|vision|blur|pressure|tight|throb|dizzy|vertigo)\b/i.test(text);
+  if (!hasSeveritySymptoms) {
+    const q17Snip = findAnswer(text, /question\s*17|describe.*headache|intensity|symptom|headache like/i);
+    const q17Note = q17Snip && wordCount(q17Snip) > 4
+      ? `The headache description at Question 17 does not include the level of severity, what physical symptoms accompany the headache, how long they typically last, or what the client cannot do during an episode.`
+      : `Question 17 is blank or does not describe the headache in enough detail. The doctor needs to understand what a headache episode actually feels like, how severe it is, and how long it lasts.`;
+    gaps.push({
+      section: 'Question 17',
+      field: 'Headache Severity, Symptoms, and Duration',
+      issue: q17Note,
+      severity: 'critical',
+      guidance: `Describe: the severity level (mild, moderate, or severe — or use a pain scale), the physical symptoms that come with the headache (nausea, sensitivity to light or sound, vision changes, dizziness, vomiting), how long a typical episode lasts, and what the client cannot do during an episode.`,
+      example: `Here is a draft:
+
+"When a headache hits, the pain is a [X] out of 10 at its worst. I would describe it as [throbbing / a tight band around my head / a stabbing pressure behind my eyes / a pounding that starts at the base of my skull and spreads forward]. Along with the pain I experience [nausea, sensitivity to light, sensitivity to loud sounds, blurred vision, dizziness]. I have to [go into a dark quiet room / lay completely still / hold my head to manage the pain]. A typical episode lasts [X hours / most of the day]. During that time I am [completely unable to work / unable to drive / unable to look at a screen / unable to care for my family normally]."
+
+Be honest about how severe these episodes are. The doctor needs an accurate picture.`
+    });
   } else passed.push('Q17 — Headache Severity and Symptoms');
 
-  if (!/\b(\d+)\s*(time|per|a|each|every)\s*(day|week|month)\b/i.test(text)) {
-    gaps.push({ section: 'Question 20', field: 'Headache Frequency', issue: 'No clear headache frequency stated.', severity: 'moderate', guidance: 'Client needs to state how often headaches occur — e.g., "2 to 3 times per week" or "approximately 8 per month."' });
+  // -- Q20: Frequency --
+  const hasFrequency = /\b(\d+)\s*(time|per|a|each|every|times?)\s*(day|week|month|year)\b/i.test(text)
+    || /\b(daily|weekly|monthly|twice|three times|several times|few times|occasional|frequent|rarely|constant|constant)\b/i.test(text);
+  if (!hasFrequency) {
+    gaps.push({
+      section: 'Question 20',
+      field: 'Headache Frequency',
+      issue: `No clear frequency was stated for how often headaches occur. The doctor needs to know how many times per week or per month the client experiences headaches to understand the level of disability.`,
+      severity: 'moderate',
+      guidance: `State approximately how often headaches occur per week or per month. If frequency varies, describe the range — for example, how many on a good week versus a bad week. If headaches are nearly daily, say so clearly.`,
+      example: `Here is a draft:
+
+"I experience headaches approximately [X] times per week / [X] times per month. On a good week I might have [X]. On a bad week or during a flare-up I can have [X] in a single day. Some headaches are manageable but about [X] out of every [X] are severe enough to stop what I am doing entirely."
+
+Even an estimate is helpful. "About 3 to 4 times a week" is better than leaving this blank.`
+    });
   } else passed.push('Q20 — Headache Frequency');
 
-  if (!hasFunctionalImpact(text)) {
-    gaps.push({ section: 'Functional Impact', field: 'Daily Life Impact', issue: 'Insufficient detail on how headaches impact daily functioning.', severity: 'critical', guidance: 'Client should describe what they cannot do during a headache episode — work, drive, use screens, be around noise or light — with specific examples.' });
+  // -- Functional Impact (Q22 region / overall) --
+  const hasHeadacheFuncImpact = /\b(work|drive|screen|light|sound|dark|quiet|lay|rest|cancel|miss|unable|avoid|family|daily|routine|sleep|care|function|productivity|concentration)\b/i.test(text);
+  if (!hasHeadacheFuncImpact) {
+    gaps.push({
+      section: 'Functional Impact',
+      field: 'Daily Life Impact',
+      issue: `There is no description of how headaches affect daily functioning, work, or relationships. A list of symptoms alone is not enough — the doctor needs to understand what the client cannot do when a headache strikes.`,
+      severity: 'critical',
+      guidance: `Describe what the client cannot do during a headache episode across at least two areas: work performance, ability to drive, caring for family, using screens or being around noise and light, sleep, and social or recreational activities. Include how often these disruptions happen.`,
+      example: `Here is a draft:
+
+"During a severe headache I am unable to [work / drive / be around bright light or loud sound / look at any screen / care for my kids normally]. I have [missed work / left early / had to call in] because of headaches [X] times in the past [month / year]. At home I [have to shut myself in a dark room / rely on others to take over responsibilities / cannot cook, clean, or manage the household during an episode]. My family has had to adjust their schedule around my headaches regularly. The unpredictability is one of the hardest parts — I never know when one will hit."
+
+If headaches affect your sleep — waking you up at night, preventing rest — include that too.`
+    });
   } else passed.push('Functional Impact — Daily Life Impact');
 }
 
 // ─── RFI ──────────────────────────────────────────────────────────────────────
 
 function evaluateRFI(text: string, raw: string, gaps: QCGap[], passed: string[]) {
-  if (!/\b(duty|duties|mos|job|role|unit|platoon|squad|mission|deployed|served|position|rank)\b/i.test(text) || text.length < 300) {
-    gaps.push({ section: 'Section III', field: 'Military Service Duties', issue: 'Military duties and service description is insufficient.', severity: 'critical', guidance: 'Client needs to describe their MOS/role, typical duties, unit, and the nature of their deployment or service.' });
+  const ctx = extractClientContext(text);
+  const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
+  const branchStr = ctx.branch || 'the military';
+  const mosStr = ctx.mos ? `as a ${ctx.mos}` : 'in their assigned role';
+
+  // -- Section III: Military Duties --
+  const hasDutiesKeywords = /\b(duty|duties|mos|job|role|unit|platoon|squad|mission|deployed|served|position|rank|assigned|billet|operator|infantry|logistics|supply|communications|intel|artillery|aviation|medical|combat|field|convoy|patrol|base|camp)\b/i.test(text);
+  if (!hasDutiesKeywords || text.length < 300) {
+    const dutySnip = findAnswer(text, /section\s*III|military service|duties|job|MOS|role/i);
+    const dutyNote = dutySnip && wordCount(dutySnip) > 4
+      ? `The military duties section describes the client’s service but does not provide enough detail about their specific MOS, typical daily duties, unit type, or the physical and environmental demands of their job.`
+      : `Section III is not filled in with enough information about the client’s military service and duties. This is the foundation of the entire claim — the doctor needs to understand what the client actually did day to day.`;
+    gaps.push({
+      section: 'Section III',
+      field: 'Military Service Duties',
+      issue: dutyNote,
+      severity: 'critical',
+      guidance: `Describe the MOS or job title, the branch of service, the type of unit, what typical daily duties involved physically and mentally, and the nature of deployments or assignments. The more specific and detailed, the better the doctor can connect the job to the conditions being claimed.`,
+      example: `Here is a draft:
+
+"I served in ${branchStr} ${mosStr}. My primary duties included [describe what you did day to day — operating radio equipment on convoys, conducting foot patrols in hostile areas, driving or maintaining vehicles under combat conditions, loading and offloading heavy equipment, providing security at checkpoints, coordinating logistics under fire]. My unit deployed to [${locStr}] where we [describe the operational environment — ran daily missions in high-threat areas, operated in extreme heat with limited rest, were exposed to IED blasts and direct fire contact, worked extended shifts with minimal downtime]. The physical demands of this job included [carrying heavy gear for long distances, operating in body armor for 12 to 18 hours at a time, sleeping in austere field conditions]. The mental demands included [constant threat awareness, decision-making under fire, witnessing casualties, managing high-stress operations with no breaks]."
+
+Describe what your actual service looked like on a typical day. That is what the doctor needs to make the connection.`
+    });
   } else passed.push('Section III — Military Duties');
 
+  // -- Section V: Condition-specific narrative (onset, progression, symptoms) --
   if (!hasTimeframe(text)) {
-    gaps.push({ section: 'Section V', field: 'Service History Timeframe', issue: 'No specific dates or timeframes for service events.', severity: 'critical', guidance: 'Client needs to include dates or approximate years for key service events, deployments, and the onset of each condition.' });
-  } else passed.push('Section V — Service Timeframes');
+    const v_snip = findAnswer(text, /section\s*V|condition|onset|how long|when did|history of/i);
+    const v_note = v_snip && wordCount(v_snip) > 4
+      ? `Section V describes the conditions but does not include specific timeframes for when each condition began or how they developed over time. The doctor needs to know approximately when each condition started and whether it traces back to service.`
+      : `Section V is incomplete. No timeframes or dates were provided for when conditions began. This section needs to be filled in for each condition being claimed.`;
+    gaps.push({
+      section: 'Section V',
+      field: 'Condition Onset and History',
+      issue: v_note,
+      severity: 'critical',
+      guidance: `For each condition being claimed, provide: approximately when it started (year or timeframe), whether it began during active duty or after separation, what incident or pattern of exposure is believed to have caused or contributed to it, and how it has progressed since then.`,
+      example: `Here is a draft template to use for each condition:
 
-  if (!/\b(ptsd|anxiety|depression|trauma|mental|psychiatric|counseling|therapy)\b/i.test(text)) {
-    gaps.push({ section: 'Section VI', field: 'Mental Health History', issue: 'Mental health history section appears empty or lacks required detail.', severity: 'critical', guidance: 'Client needs to describe any mental health conditions, traumatic events from service, and how these conditions affect their daily life.' });
+"[Condition name]: This condition started around [year]. At the time I was [on active duty / recently separated / deployed to ${locStr}]. I believe it is connected to my service because [describe the connection — repeated exposure to blast concussions, carrying heavy loads daily, sleeping in extreme conditions, chronic stress during deployment, a specific incident]. Since separation the condition has [stayed the same / gotten progressively worse / resulted in medical treatment including (describe treatment)]. It currently affects my ability to [describe current functional impact]."
+
+Complete this for every condition listed in this form. Each one needs its own timeline and story.`
+    });
+  } else passed.push('Section V — Condition Onset Timeframes');
+
+  // -- Section V continued: symptom narrative depth --
+  const hasSymptomDepth = /\b(pain|ache|hurt|burning|numb|tingle|fatigue|dizzy|nausea|chest|breath|sweat|heart|pressure|cramp|spasm|stiff|swell|weak|limit|restrict|disturb|sleep|nightmare|flashback|avoid|isolat|irritab|anger|memory|concentrat|startle|trigger)\b/i.test(text);
+  if (!hasSymptomDepth) {
+    gaps.push({
+      section: 'Section V',
+      field: 'Current Symptom Description',
+      issue: `Section V does not describe the current symptoms in enough detail. The doctor needs to know what the client is experiencing right now, not just that a condition exists.`,
+      severity: 'moderate',
+      guidance: `For each condition, describe the current symptoms: what they feel like, how often they occur, what makes them worse, and what they prevent the client from doing. Do not just name the condition — describe the actual experience.`,
+      example: `Here is a draft:
+
+"Right now my [condition] causes [describe specific symptoms — constant lower back pain that radiates into my left leg, recurring nightmares about specific events from deployment, daily headaches that force me to stop working, chronic fatigue that makes basic tasks exhausting]. Symptoms are worst [in the morning / after physical activity / when under stress / at night]. I manage them by [describe current management — taking medication, resting, avoiding certain activities, attending therapy]. Despite this the condition [has not improved / continues to limit my ability to work and function normally]."`
+    });
+  } else passed.push('Section V — Current Symptoms');
+
+  // -- Section VI: Mental Health History --
+  const hasMHKeywords = /\b(ptsd|anxiety|depression|trauma|mental|psychiatric|counseling|therapy|nightmare|flashback|hypervigilance|avoid|isolat|mood|anger|irritab|sleep|MST|military sexual|combat stress|moral injury)\b/i.test(text);
+  if (!hasMHKeywords) {
+    const mh_snip = findAnswer(text, /section\s*VI|mental health|psychiatric|trauma|PTSD/i);
+    const mh_note = mh_snip && wordCount(mh_snip) > 4
+      ? `Section VI mentions mental health but does not describe specific traumatic events from service, the nature of the mental health condition, or how it currently affects daily life. The doctor needs that level of detail to make the nexus connection.`
+      : `Section VI appears to be blank or nearly blank. This section is required. The doctor needs to understand the client’s mental health history, traumatic events from service, and the current effect on daily functioning.`;
+    gaps.push({
+      section: 'Section VI',
+      field: 'Mental Health History and Trauma',
+      issue: mh_note,
+      severity: 'critical',
+      guidance: `Describe the mental health condition being claimed, at least one specific traumatic or high-stress event from service that contributed to it, and how the condition currently affects the client’s daily life. Cover at least: sleep and nightmares, ability to work and concentrate, relationships and social life, and any avoidance behaviors.`,
+      example: `Here is a draft:
+
+"I have been dealing with [PTSD / anxiety / depression / a combination of these] since [approximate timeframe — my time in ${locStr} / shortly after I separated / while I was still on active duty]. During my service I experienced [describe a specific event or pattern — repeated exposure to IED blasts and casualties, witnessing the death of fellow service members, combat engagements where I was under direct fire, the constant threat of attacks during convoys through hostile areas]. These events continue to affect me today.
+
+Currently my symptoms include [nightmares about specific events, difficulty sleeping, hypervigilance in public spaces, avoiding crowds and loud sounds, irritability and anger that affects my relationships, difficulty concentrating at work, isolating from friends and family]. I [am currently in therapy / have not sought treatment / have tried medication]. My mental health condition directly affects my ability to [work consistently, maintain relationships, leave the house comfortably, feel safe in normal daily environments]."
+
+Be specific about what you experienced. The doctor’s job is to connect your service to your current condition. Give them the details to do that.`
+    });
   } else passed.push('Section VI — Mental Health History');
+
+  // -- Section VIII: Coexisting conditions interaction --
+  const hasCoexisting = /\b(secondary|related to|caused by|result of|aggravated by|worsened by|linked to|connection|because of|due to|from|stemming|coexist|interact|compound|combination)\b/i.test(text);
+  if (!hasCoexisting) {
+    gaps.push({
+      section: 'Section VIII',
+      field: 'Coexisting Condition Interaction',
+      issue: `Section VIII does not describe how the claimed conditions interact with or affect each other. Most of these conditions are being filed as secondary conditions, which means the doctor needs to understand how they relate to each other and to the primary diagnosis.`,
+      severity: 'moderate',
+      guidance: `Describe how the conditions listed in this form affect each other. For example: how does PTSD worsen physical pain? How does chronic pain affect mental health? How do sleep disruptions from one condition affect the severity of another? These connections support a secondary filing.`,
+      example: `Here is a draft:
+
+"My conditions do not exist in isolation — they compound each other. My [PTSD / anxiety] causes [poor sleep, hypervigilance, and chronic stress], which makes my [physical condition] significantly worse. When my mental health is in a bad cycle, my [pain / GI issues / headaches] flare up more severely and more frequently. Conversely, when my physical symptoms are at their worst, my mental state deteriorates because [I cannot work, I cannot exercise, I am in constant pain, which feeds depression and hopelessness]. These conditions reinforce each other in a cycle that is difficult to break without treating all of them together."
+
+This section matters because it shows the doctor that these conditions are not isolated — they are part of a system. That supports filing them as connected or secondary claims.`
+    });
+  } else passed.push('Section VIII — Coexisting Condition Interaction');
 }
 
 // ─── EMAIL DRAFT ─────────────────────────────────────────────────────────────
