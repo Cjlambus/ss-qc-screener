@@ -90,7 +90,7 @@ export default function Screener() {
         navigate(`/review/${reviewIds[0]}`);
       } else {
         // For multiple forms, go to history filtered by this batch
-        navigate(`/history?client=${encodeURIComponent(clientName.trim())}&batch=${reviewIds.join(",")}`);
+        navigate(`/history?client=${encodeURIComponent(clientName.trim())}&batch=${encodeURIComponent(reviewIds.join(","))}`);
       }
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
