@@ -146,14 +146,36 @@ function extractClientContext(text: string) {
     const m = /MOS[^:\n]{0,20}:\s*([^\n]{5,60})/i.exec(text);
     return m ? m[1].trim() : null;
   })();
+
+  // Location detection: only scan lines that look like client-typed answers.
+  // Strip lines that are clearly form prompts or checkbox labels:
+  //   - Lines ending with '?' (questions)
+  //   - Lines starting with a question number (e.g. "12." or "Q12")
+  //   - Lines containing checkbox markers (☐ ☑ ✓)
+  //   - Lines that are just section headers (all-caps short lines)
+  //   - Lines with "(e.g.," or "(such as" — these are instructions with examples
+  const answerOnlyLines = text
+    .split('\n')
+    .filter(line => {
+      const t = line.trim();
+      if (!t) return false;
+      if (t.endsWith('?')) return false;                          // question lines
+      if (/^(q?\d{1,2}\.)/i.test(t)) return false;             // question numbers
+      if (/[\u2610\u2611\u2612\u2713\u2714\u2717\u2718\u25a1\u25a0]/.test(t)) return false; // checkbox lines
+      if (/\(e\.g\.,|such as|for example|including but not|please describe|please list|please explain/i.test(t)) return false; // instruction lines
+      if (/^section\s+[ivxIVX]+|^section\s+\w/i.test(t)) return false; // section headers
+      return true;
+    })
+    .join('\n');
+
   const locations: string[] = [];
-  if (/\biraq\b/i.test(text)) locations.push('Iraq');
-  if (/\bkuwait\b/i.test(text)) locations.push('Kuwait');
-  if (/\begypt\b/i.test(text)) locations.push('Egypt');
-  if (/\bafghanistan\b/i.test(text)) locations.push('Afghanistan');
-  if (/\bkorea\b/i.test(text)) locations.push('Korea');
-  if (/\bokinawa\b/i.test(text)) locations.push('Okinawa');
-  if (/\bgermany\b/i.test(text)) locations.push('Germany');
+  if (/\biraq\b/i.test(answerOnlyLines)) locations.push('Iraq');
+  if (/\bkuwait\b/i.test(answerOnlyLines)) locations.push('Kuwait');
+  if (/\begypt\b/i.test(answerOnlyLines)) locations.push('Egypt');
+  if (/\bafghanistan\b/i.test(answerOnlyLines)) locations.push('Afghanistan');
+  if (/\bkorea\b/i.test(answerOnlyLines)) locations.push('Korea');
+  if (/\bokinawa\b/i.test(answerOnlyLines)) locations.push('Okinawa');
+  if (/\bgermany\b/i.test(answerOnlyLines)) locations.push('Germany');
   // Pull meds the client already listed (for Section G hint)
   const medMatch = /(?:Amlodipine|losartan|metformin|tadalafil|pantoprazole|furosemide|simvastatin|benzonatate|montelukast|tamsulosin|hydrochlorothiazide)/gi;
   const medsFound = text.match(medMatch) || [];
