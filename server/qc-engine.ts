@@ -875,6 +875,35 @@ If there was a specific incident — a blast, a fall, a vehicle accident — men
     });
   } else passed.push('Q1 — Headache History Timeframe');
 
+  // -- Q2: When did headaches begin (checkbox group) --
+  // All four choices are blank checkboxes (☐) if the client did not select any.
+  // Detect whether at least one is checked by looking for ☑ or ✓ near the Q2 prompt.
+  const q2Area = (() => {
+    const q2Idx = text.search(/did your headaches begin/i);
+    return q2Idx >= 0 ? text.substring(q2Idx, q2Idx + 400) : '';
+  })();
+  const q2Checked = /[☑✓✔]/.test(q2Area) ||
+    /\b(during active duty|shortly after separation|years after service|after a specific injury)\b/i.test(q2Area.replace(/\u2610/g, ''));
+  // Also pass if Q1 already has a clear timeframe narrative that answers this question
+  const q2HasNarrativeAnswer = hasTimeframe(q1Snip);
+  if (!q2Checked && !q2HasNarrativeAnswer) {
+    gaps.push({
+      section: 'Question 2',
+      field: 'When Headaches Began (Service Connection Checkbox)',
+      issue: `Question 2 asks whether headaches began during active duty, shortly after separation, years after service, or after a specific injury or event. No selection was made. The doctor needs to know the timeframe of onset in order to establish a service connection.`,
+      severity: 'critical',
+      guidance: `Go back to Question 2 and select the option that best describes when headaches began. If they started during active duty service, select that option. If they began after a specific injury or event (blast, fall, head trauma), select that option and then describe the event in Question 3.`,
+      example: `Select the option that fits best:
+
+- During active duty (headaches started while still serving)
+- Shortly after separation (started within months of getting out)
+- Years after service (started well after separating)
+- After a specific injury or event (started after a blast, fall, or head trauma)
+
+If it was after a specific injury, make sure to describe the event in Question 3 as well.`
+    });
+  } else passed.push('Q2 — Headache Onset Selection');
+
   // -- Q3: If cause was injury, needs location and detail --
   const injuryMentioned = /\b(injury|injur|blast|explosion|IED|concussion|head trauma|TBI|fall|hit|struck|vehicle|rollover|accident)\b/i.test(text);
   if (injuryMentioned) {
@@ -1130,16 +1159,61 @@ Complete this for every condition listed in this form. Each one needs its own ti
   // (symptom inventory) which clients DO fill in. We need these words in Section V specifically.
   const hasSymptomDepth = sectionVAnswerWords >= 20 &&
     /\b(pain|ache|hurt|burning|numb|tingle|fatigue|dizzy|nausea|chest|breath|sweat|heart|pressure|cramp|spasm|stiff|swell|weak|limit|restrict|disturb|sleep|nightmare|flashback|avoid|isolat|irritab|anger|memory|concentrat|startle|trigger)\b/i.test(sectionVText);
-  if (!hasSymptomDepth) {
+
+  // Secondary check: detect when functional impact fields are answered with bare numbers only (e.g. "0", "6", "7")
+  // or left blank. This catches Condition 4 having completely empty functional impact.
+  // Look for patterns like a condition block where the impact lines are all digits or empty.
+  const conditionBlocksWithBareNumbers = (() => {
+    // Extract individual condition blocks (Condition #1 through #5)
+    const conditionBlocks: string[] = [];
+    const condRe = /Condition #\d+ Name:[\s\S]{0,4000}?(?=Condition #\d+ Name:|SECTION VI|$)/gi;
+    let m;
+    while ((m = condRe.exec(sectionVText)) !== null) conditionBlocks.push(m[0]);
+    // A condition is "bare-number only" if its functional impact section has no sentence-length answer
+    return conditionBlocks.filter(block => {
+      const condName = /Condition #\d+ Name:\s*([^\n]{2,})/i.exec(block)?.[1]?.trim();
+      if (!condName || condName.length < 2) return false; // empty condition slot — skip
+      // Skip if the "name" looks like a form label (e.g. "A. Onset and Initial Presentation")
+      // This happens when the client left Condition #N blank and pdftotext reads the next label
+      if (/^[A-H]\s*\.\s*(Onset|Course|Current|Functional|Flare|Condition|Section)/i.test(condName)) return false;
+      // Check if the functional impact area (after "D.") has any real sentences
+      const impactSection = block.substring(block.search(/D\. Condition.*Functional Impact/i));
+      if (!impactSection || impactSection.length < 10) return false;
+      // Strip prompt lines and check for at least one sentence (15+ words of real text)
+      const impactAnswers = impactSection
+        .replace(/D\. Condition.*Functional Impact[^\n]*/gi, '')
+        .replace(/Describe.*citing specific examples[^\n]*/gi, '')
+        .replace(/Occupational limitations[^\n]*/gi, '')
+        .replace(/Physical activity[^\n]*/gi, '')
+        .replace(/Reliability and attendance[^\n]*/gi, '')
+        .replace(/Social or family[^\n]*/gi, '')
+        .replace(/Document Ref[^\n]*/gi, '')
+        .replace(/\u2022[^\n]*/g, '')
+        .replace(/E\. Condition[\s\S]*/i, ''); // stop at flare-up section
+      const impactWords = wordCount(impactAnswers.trim());
+      // If under 10 real words, this condition has no meaningful functional impact
+      return impactWords < 10;
+    });
+  })();
+
+  const hasBareNumberConditions = conditionBlocksWithBareNumbers.length > 0;
+
+  if (!hasSymptomDepth || hasBareNumberConditions) {
+    const bareNames = conditionBlocksWithBareNumbers
+      .map(b => /Condition #\d+ Name:\s*([^\n]{2,})/i.exec(b)?.[1]?.trim())
+      .filter(Boolean)
+      .join(', ');
     gaps.push({
       section: 'Section V',
       field: 'Current Symptom Description',
-      issue: `Section V does not describe the current symptoms in enough detail. The doctor needs to know what the client is experiencing right now, not just that a condition exists.`,
+      issue: hasBareNumberConditions
+        ? `One or more conditions are missing functional impact descriptions. ${bareNames ? `The following condition(s) have blank or number-only functional impact fields: ${bareNames}.` : ''} The doctor needs to understand how each condition affects daily work, physical activity, sleep, concentration, and social life — not just a number or blank.`
+        : `Section V does not describe the current symptoms in enough detail. The doctor needs to know what the client is experiencing right now, not just that a condition exists.`,
       severity: 'moderate',
-      guidance: `For each condition, describe the current symptoms: what they feel like, how often they occur, what makes them worse, and what they prevent the client from doing. Do not just name the condition — describe the actual experience.`,
-      example: `Here is a draft:
+      guidance: `For each condition, describe the current symptoms: what they feel like, how often they occur, what makes them worse, and what they prevent the client from doing. Do not just name the condition — describe the actual experience. Specifically for the conditions listed above, replace the blank or number-only answers with real sentences.`,
+      example: `Here is a draft for a blank functional impact section:
 
-"Right now my [condition] causes [describe specific symptoms — constant lower back pain that radiates into my left leg, recurring nightmares about specific events from deployment, daily headaches that force me to stop working, chronic fatigue that makes basic tasks exhausting]. Symptoms are worst [in the morning / after physical activity / when under stress / at night]. I manage them by [describe current management — taking medication, resting, avoiding certain activities, attending therapy]. Despite this the condition [has not improved / continues to limit my ability to work and function normally]."`
+"This condition affects my work because [describe — I cannot sit for long periods, I have to take frequent breaks, I have called in sick multiple times]. Physical activity is [impossible / very limited / manageable only with rest afterward]. My sleep is affected because [I wake up in pain, I cannot get comfortable, I am mentally exhausted from managing the condition all day]. I find it difficult to concentrate because [the pain / anxiety / symptoms] is always present in the background. My family and social life have suffered because [I cancel plans, I am irritable, I isolate myself, I cannot participate in activities I used to enjoy]."`
     });
   } else passed.push('Section V — Current Symptoms');
 
@@ -1147,18 +1221,33 @@ Complete this for every condition listed in this form. Each one needs its own ti
   // False-pass guard: "PTSD", "anxiety", "depression", "trauma", "mental" all appear in the
   // Section VI HEADER/INSTRUCTIONS ("Describe any history of: Anxiety, Depression, PTSD...").
   // We must scope the check to text AFTER the Section VI prompt, looking for client-typed content.
+  const sectionVIIStart = text.search(/section\s*VII\b|SECTION VII\b/i);
+  const sectionVIEnd = sectionVIIStart > sectionVIStart ? sectionVIIStart : sectionVIStart + 1500;
   const sectionVIText = sectionVIStart !== -1
-    ? text.substring(sectionVIStart, sectionVIStart + 2500)
+    ? text.substring(sectionVIStart, sectionVIEnd)
     : '';
   // The Section VI prompt itself mentions all MH terms. A client answer would appear as a
-  // substantive paragraph after those instructions. Require at least 25 typed words in that section.
+  // substantive paragraph after those instructions. Require at least 40 typed words in that section.
   const sectionVIAnswerWords = (() => {
     const stripped = sectionVIText
-      .replace(/describe any history|anxiety.*depression.*ptsd|onset.*origin|in.service stressors|post.service changes|functional impact/gi, '')
-      .replace(/section\s*VI[^\n]*/gi, '');
+      .replace(/describe any history[^\n]*/gi, '')
+      .replace(/anxiety[^\n]*depression[^\n]*ptsd[^\n]*/gi, '')
+      .replace(/onset.*origin[^\n]*/gi, '')
+      .replace(/in.service stressors[^\n]*/gi, '')
+      .replace(/post.service changes[^\n]*/gi, '')
+      .replace(/functional impact[^\n]*/gi, '')
+      .replace(/with specific descriptive inclusion[^\n]*/gi, '')
+      .replace(/\u2022[^\n]*/g, '')  // strip all bullet lines (form prompts)
+      .replace(/section\s*VI[^\n]*/gi, '')
+      .replace(/section\s*VII[^\n]*/gi, '');
     return wordCount(stripped.trim());
   })();
-  const hasMHKeywords = sectionVIAnswerWords >= 25 &&
+  // Section VI requires substantive detail — not just any MH keyword mention.
+  // Jordan's one sentence "The anxiety prohibits me from concerts" (25 words, has 'anxiety') was passing.
+  // Require: enough words (40+) AND both a service/onset reference AND a current impact reference.
+  const hasMHServiceRef = /\b(during service|active duty|deployed|deployment|in the marine|in the army|in the military|while serving|when i was in|in.service|combat|jordan|training|stressor|exposed|isis|threat|mission|watch|patrol|were there|was there)\b/i.test(sectionVIText);
+  const hasMHCurrentImpact = /\b(currently|still|today|now|daily|every day|affect|impact|prevent|unable|cannot|relationship|work|sleep|isolat|avoid|function|struggle|difficult|hard time)\b/i.test(sectionVIText);
+  const hasMHKeywords = sectionVIAnswerWords >= 40 && hasMHServiceRef && hasMHCurrentImpact &&
     /\b(ptsd|anxiety|depression|trauma|nightmare|flashback|hypervigilance|avoid|isolat|mood|anger|irritab|panic|counsel|therapy|MST|combat stress)\b/i.test(sectionVIText);
   if (!hasMHKeywords) {
     const mh_snip = findAnswer(text, /section\s*VI|mental health|psychiatric|trauma|PTSD/i);
@@ -1186,17 +1275,38 @@ Be specific about what you experienced. The doctor’s job is to connect your se
   // Section VIII BULLET PROMPTS ("Do any of your conditions aggravate or worsen another?").
   // We need the client to have actually typed answers, not just the prompt text to match.
   const sectionVIIIStart = text.search(/section\s*VIII\b|SECTION VIII\b/i);
+  // Scope to ONLY Section VIII content — stop at Section IX to avoid counting Section IX answers
+  const sectionIXStart = text.search(/section\s*IX\b|SECTION IX\b/i);
+  const sectionVIIIEnd = sectionIXStart > sectionVIIIStart ? sectionIXStart : sectionVIIIStart + 1500;
   const sectionVIIIText = sectionVIIIStart !== -1
-    ? text.substring(sectionVIIIStart, sectionVIIIStart + 2000)
+    ? text.substring(sectionVIIIStart, sectionVIIIEnd)
     : '';
   const sectionVIIIAnswerWords = (() => {
+    // Strip ALL known prompt lines and bullet fragments — only client-typed sentences should remain
     const stripped = sectionVIIIText
-      .replace(/aggravate or worsen another condition|share overlapping symptoms|contribute to cumulative|provide the following explanations|do not speculate|to your knowledge|if yes.*explain/gi, '')
-      .replace(/section\s*VIII[^\n]*/gi, '');
+      .replace(/section\s*VIII[^\n]*/gi, '')
+      .replace(/provide the following explanations[^\n]*/gi, '')
+      .replace(/do not speculate beyond[^\n]*/gi, '')
+      .replace(/to your knowledge[^\n]*/gi, '')
+      .replace(/do any of your conditions[^\n]*/gi, '')
+      .replace(/mental.*medical.*physical[^\n]*/gi, '')
+      .replace(/aggravate or worsen another condition[^\n]*/gi, '')
+      .replace(/share overlapping symptoms[^\n]*/gi, '')
+      .replace(/contribute to cumulative[^\n]*/gi, '')
+      .replace(/if yes.*explain[^\n]*/gi, '')
+      .replace(/\u2022[^\n]*/g, '')  // strip all bullet lines
+      .replace(/document ref[^\n]*/gi, '');
     return wordCount(stripped.trim());
   })();
+  // Keyword check must also exclude prompt text — strip bullets before checking
+  const sectionVIIIAnswerOnly = sectionVIIIText
+    .replace(/\u2022[^\n]*/g, '')
+    .replace(/aggravate or worsen[^\n]*/gi, '')
+    .replace(/contribute to cumulative[^\n]*/gi, '')
+    .replace(/share overlapping[^\n]*/gi, '')
+    .replace(/if yes.*explain[^\n]*/gi, '');
   const hasCoexisting = sectionVIIIAnswerWords >= 15 &&
-    /\b(secondary|related to|caused by|result of|aggravated|worsened|linked|connection|because of|due to|stemming|compound|combination|makes.*worse|worse when|when.*flares?|affects? my|contributes? to)\b/i.test(sectionVIIIText);
+    /\b(secondary|related to|caused by|result of|aggravated|worsened|linked|connection|because of|due to|stemming|compound|combination|makes.*worse|worse when|when.*flares?|affects? my|contributes? to|interact)\b/i.test(sectionVIIIAnswerOnly);
   if (!hasCoexisting) {
     gaps.push({
       section: 'Section VIII',
