@@ -63,6 +63,19 @@ function hasLocation(text: string): boolean {
   return /\b(iraq|afghanistan|kuwait|bahrain|egypt|korea|japan|germany|okinawa|stateside|overseas|base|camp|fob|fort|post|ship|deployed|forward|patrol|convoy|back|neck|shoulder|knee|hip|ankle|wrist|elbow|foot|feet|lower|upper|lumbar|cervical|thoracic|left|right|bilateral|spine|disc)\b/i.test(text);
 }
 
+// Onset depth check — requires ALL THREE of:
+//   1. A timeframe (year, "X years ago", "during service", etc.)
+//   2. A location or contextual setting (deployment country, base, body part, duty context)
+//   3. A triggering event or activity (what was happening when the condition started)
+// A year alone is not sufficient — "2018" tells the doctor nothing about causation.
+function hasOnsetDepth(text: string): boolean {
+  if (!hasTimeframe(text)) return false;
+  if (!hasLocation(text)) return false;
+  // Triggering event or activity — something that connects the timeframe to a cause
+  const hasTrigger = /\b(while|during|after|when|following|from|because|due to|as a result|carrying|lifting|running|falling|fall|impact|blast|explosion|IED|convoy|patrol|training|exercise|jump|rappel|ruck|rucksack|brace|bending|twisting|collision|vehicle|rollover|accident|incident|stressor|deployed|deployment|mission|operation|on duty|in the field|working|operating|assignment|sustained|got|took|received|happened|occurred|started after|began after|developed after|developed during|began during|started during)\b/i.test(text);
+  return hasTrigger;
+}
+
 function hasEmotionalDetail(text: string): boolean {
   return /\b(fear|scared|terrif|shock|helpless|panic|numb|angry|guilt|shame|hypervigilant|startle|dread|horror|overwhelm|worthless|hopeless|isolat|withdraw|avoid|rage|flashback|nightmare|intrusive|trigger|nervous|anxious|depress|grief|loss)\b/i.test(text);
 }
@@ -251,22 +264,42 @@ Update this with your own words and specifics — the doctor needs your real exp
     wordCount(b) >= 5
   ) || '';
 
-  if (!onsetHasTimeframe || onsetIsOffTopic) {
+  // MH onset depth: require year + service connection + what first appeared or what triggered it
+  const onsetHasDepth = onsetHasTimeframe &&
+    /\b(during|after|while|when|following|since|because|due to|service|active duty|deployed|deployment|getting out|separated|separation|discharge|combat|training|incident|event|happened|occurred|stressor|what happened|began when|started when|triggered)\b/i.test(onsetAfter) &&
+    /\b(notice|started noticing|first notice|first started|began to|trouble sleeping|could not sleep|irritabl|on edge|withdraw|isolat|nightmare|flashback|panic|angry|mood|numb|depress|anxiet|stress|shut down|avoid|hypervigilant|startle)\b/i.test(onsetAfter);
+
+  if (!onsetHasTimeframe || onsetIsOffTopic || !onsetHasDepth) {
+    // Build targeted message based on what is missing
+    const mhOnset_missing: string[] = [];
+    if (!onsetHasTimeframe) mhOnset_missing.push("an approximate year or timeframe for when symptoms first started");
+    else {
+      if (onsetIsOffTopic) mhOnset_missing.push("a timeframe (when symptoms first began) - the current answer describes a trigger situation, not an onset");
+      if (!onsetHasDepth) {
+        const hasServiceConn = /\b(during|after|while|when|following|since|service|active duty|deployed|getting out|separated|combat|training)\b/i.test(onsetAfter);
+        if (!hasServiceConn) mhOnset_missing.push("a connection to your service or post-service period - when relative to your military service did symptoms start");
+        const hasFirstSymptom = /\b(notice|started noticing|first notice|trouble sleeping|could not sleep|irritabl|on edge|withdraw|nightmare|flashback|panic|angry|numb|depress|anxiet|shut down|avoid)\b/i.test(onsetAfter);
+        if (!hasFirstSymptom) mhOnset_missing.push("what you first noticed - what was the first sign something was wrong, what changed");
+      }
+    }
+    const mhOnset_str = mhOnset_missing.length > 0 ? ` Missing: ${mhOnset_missing.join("; ")}.` : "";
     const onsetNote = onsetIsOffTopic
-      ? `What was written — "${onsetWritten.trim()}" — describes a trigger situation, not when symptoms first started. This question is asking for a timeframe, not a trigger.`
-      : `No timeframe was provided for when symptoms began.`;
+      ? `What was written describes a trigger situation, not when symptoms first started. This question is asking for a timeframe and onset story, not what situations cause distress today.${mhOnset_str}`
+      : (!onsetHasTimeframe
+          ? `No timeframe was provided for when symptoms began.`
+          : `The onset answer has a year but does not go far enough.${mhOnset_str}`);
 
     gaps.push({
       section: 'Section A — Onset',
       field: 'Onset and Duration of Symptoms',
       issue: onsetNote,
       severity: 'critical',
-      guidance: `This field is asking: When did your mental health symptoms first start? It needs an approximate year or timeframe and should connect to your service or the period after. It should also note whether symptoms have been ongoing or come and go.`,
-      example: `Here is a draft format to follow — fill in your actual years and details:
+      guidance: `This field needs three things: (1) an approximate year or timeframe for when symptoms first started; (2) a connection to your service - did they start during deployment, shortly after getting out, or gradually after separation; (3) what you first noticed - trouble sleeping, being on edge, withdrawing from people, nightmares, irritability, something changed. That combination gives the doctor a timeline and a starting point for the nexus.`,
+      example: `Here is a draft format to follow - fill in your actual years and details:
 
-"My symptoms started around [year] — during / shortly after my deployment to ${firstLoc}. At first it was [describe what you first noticed, e.g., trouble sleeping, irritability, staying alert]. Over time it got worse. Since getting out of the service the symptoms have been [ongoing / getting worse / coming and going in waves]. It has been approximately [X] years since symptoms first started."
+"My symptoms started around [year] - [during my deployment to ${firstLoc} / shortly after I separated from service / in the years following my time in the military]. At first I noticed [describe what you first noticed: I could not sleep, I was constantly on edge, I stopped wanting to be around people, I started having nightmares about things that happened, I had no patience and my anger was at a level that was not normal for me]. Over time it got worse. The symptoms have been [ongoing ever since / getting progressively worse / coming and going in waves but always there in the background]. It has been approximately [X] years since this started."
 
-If symptoms started gradually over time, say that. If there was a specific event that triggered the start, mention it here. The goal is to give the doctor a clear timeline.`
+If there was a specific event that triggered the start, mention it here. If symptoms built up gradually over time, say that. The doctor needs a clear picture of when this started and what it looked like in the beginning.`
     });
   } else {
     passed.push('Section A — Onset and Duration');
@@ -649,11 +682,21 @@ function evaluateMSK(text: string, raw: string, gaps: QCGap[], passed: string[])
   // -- IV-A: Onset --
   // False-pass guard: service years (1985, 1986, etc.) appear in Section I header.
   // Require a timeframe within the Section IV+ answer region.
-  if (!hasTimeframe(mskAnswerText)) {
+  // MSK IV-A onset depth: require year + location/body area/context + triggering activity or incident
+  if (!hasOnsetDepth(mskAnswerText)) {
     const onsetIdx = text.search(/onset|when did|how long|history of/i);
-    const onsetSnip = onsetIdx >= 0 ? text.substring(onsetIdx, onsetIdx + 200).trim() : '';
-    const onsetNote = onsetSnip && wordCount(onsetSnip) > 3
-      ? `What was written does not include a timeframe for when the condition began. The doctor needs to know when it started and how it developed.`
+    const onsetSnip = onsetIdx >= 0 ? text.substring(onsetIdx, onsetIdx + 400).trim() : '';
+    // Identify specifically what is missing
+    const msk_missing: string[] = [];
+    if (!hasTimeframe(mskAnswerText)) msk_missing.push("an approximate year or timeframe for when it started");
+    else {
+      if (!hasLocation(mskAnswerText)) msk_missing.push("where the condition started or what context you were in at the time (body part, location, duty environment)");
+      const hasMSKTrigger = /\b(while|during|after|when|following|because|due to|carrying|lifting|running|falling|fall|impact|blast|explosion|IED|convoy|patrol|training|exercise|jump|rappel|ruck|rucksack|bending|twisting|collision|vehicle|rollover|accident|incident|deployed|deployment|mission|on duty|in the field|operating|assignment|sustained|got|took|happened|occurred|started after|began after|developed after|developed during|began during|started during)\b/i.test(mskAnswerText);
+      if (!hasMSKTrigger) msk_missing.push("the specific activity or incident that triggered the condition - what were you doing when it started");
+    }
+    const msk_missingStr = msk_missing.length > 0 ? ` Missing: ${msk_missing.join("; ")}.` : "";
+    const onsetNote = (onsetSnip && wordCount(onsetSnip) > 5)
+      ? `The onset answer does not have enough detail for the doctor to connect this condition to service.${msk_missingStr}`
       : `No onset information was provided. This field was left blank or skipped.`;
 
     gaps.push({
@@ -661,12 +704,12 @@ function evaluateMSK(text: string, raw: string, gaps: QCGap[], passed: string[])
       field: 'Onset and History',
       issue: onsetNote,
       severity: 'critical',
-      guidance: `State when this condition first started: the approximate year or timeframe, whether it began during or after service, what activity or incident triggered it, and whether it came on suddenly or built up gradually over time.`,
+      guidance: `Go beyond just the year. State: (1) approximately when it started; (2) where you were or what you were doing at the time - deployed, in training, back stateside, doing a specific physical task; (3) the activity or incident that triggered it - a specific lift, a fall, carrying heavy gear, a vehicle blast, repetitive physical stress over time. These three elements together are what let the doctor write the nexus to your service.`,
       example: `Here is a draft format to follow:
 
-"This condition started around [year]. I was [stationed at / deployed to / back home] at the time. The pain began [suddenly after a specific incident / gradually over time]. I first noticed it when [describe the situation: lifting during a training exercise, carrying heavy gear on a long patrol, a fall or vehicle incident, physical training]. At the time I [was / was not] treated by a medic or doctor. Since then the condition has [stayed the same / gotten progressively worse / flared up in cycles]."
+"This condition started around [year]. At the time I was [on active duty / recently separated / deployed to (location) / stationed at (base)]. The pain began [suddenly after a specific incident / gradually over time from repeated physical stress]. I first noticed it when [describe the situation: I fell from a vehicle during a training exercise, I was carrying a heavy ruck on a long patrol, I was loading equipment and felt something give way, I experienced an IED blast that jolted my spine, I was in combatives training and took repeated impacts to this area]. Before that this was not a problem. Since then the condition has [stayed the same / gotten progressively worse / spread to other areas]."
 
-If the injury happened during service, say it clearly: "This started while I was on active duty" or "This began during my deployment to [location]."`
+Be specific about the activity or incident. That is the bridge between your service and your condition.`
     });
   } else passed.push('Section IV-A -- Onset');
 
@@ -726,12 +769,14 @@ Fill in each section with what is actually true for you.`
     gaps.push({
       section: 'Section IV-B',
       field: 'Symptom Progression',
-      issue: `No description of whether the condition has changed over time. The doctor needs to know if it is getting worse, staying the same, or fluctuating.`,
+      issue: `No description of how this condition has changed over time. The doctor needs to know the direction (better, worse, or same), how it changed, and a sense of the timeframe - for example, whether it has been gradually worsening over years or cycling through flare-ups and relief periods.`,
       severity: 'moderate',
-      guidance: `Describe the direction of your symptoms since they started: are they getting worse, staying the same, or cycling through flare-ups and relief? What makes them worse? Has the pain spread?`,
+      guidance: `Describe three things: (1) the direction - is it getting worse, staying the same, or fluctuating? (2) how it changed - did pain spread to new areas, increase in frequency, become more severe, require more medication? (3) a timeframe - over how many months or years has this change happened? Also name what triggers a flare-up and what you cannot do during one.`,
       example: `Here is a draft:
 
-"Since this condition started, it has [gotten progressively worse / stayed about the same / fluctuated with good and bad periods]. Things that trigger a flare-up include [long drives, sitting at a desk for more than an hour, physical labor, cold weather, stress]. During a flare-up the pain goes from a [X] to a [X] out of 10 and I am [unable to work / forced to rest / relying on medication to get through the day]. The condition has [spread to include my [area] / stayed in the same location]. Nothing has given me consistent long-term relief."`
+"Since this condition started around [year], it has [gotten progressively worse over the past [X] years / stayed about the same / fluctuated with better and worse periods]. In the beginning it was [describe initial severity - occasional pain, manageable, minor]. Over time it has [spread from (area) to (area), increased in frequency from occasional to daily, become more severe and harder to manage without medication, begun interfering with sleep]. Things that trigger a flare-up now include [long drives, sitting or standing for more than [X] minutes, physical labor, cold weather, stress, certain movements]. During a flare-up the pain goes from a [X] to a [X] out of 10 and lasts [hours / days]. I am [unable to work / forced to rest / relying on medication just to get through the day]. Nothing has given me consistent long-term relief."
+
+Progression tells the doctor this is not a one-time injury - it is an ongoing condition that has been getting worse over time.`
     });
   } else passed.push('Section IV-B -- Symptom Progression');
 }
@@ -856,22 +901,32 @@ function evaluateHeadaches(text: string, raw: string, gaps: QCGap[], passed: str
 
   // -- Q1: Timeframe / when headaches began --
   const q1Snip = text.substring(0, 800);
-  if (!hasTimeframe(q1Snip)) {
+  // Q1 onset depth: require year + context/setting + triggering situation
+  if (!hasOnsetDepth(q1Snip)) {
     const q1Written = q1Snip.replace(/\s+/g, ' ').trim();
-    const q1Note = q1Written.length > 40
-      ? `The response does not include a timeframe for when headaches first started. The doctor needs an approximate year or period and whether they began during service or after.`
-      : `No timeframe was provided for when headaches began. This field needs to be completed.`;
+    // Identify what is missing
+    const q1_missing: string[] = [];
+    if (!hasTimeframe(q1Snip)) q1_missing.push("an approximate year or timeframe for when headaches first started");
+    else {
+      if (!hasLocation(q1Snip)) q1_missing.push("where you were or what context you were in when headaches began - deployed, in training, back stateside, at a specific location");
+      const hasQ1Trigger = /\b(while|during|after|when|following|because|due to|blast|explosion|IED|impact|fall|struck|hit|vehicle|rollover|accident|training|patrol|mission|incident|deployed|deployment|on duty|in the field|happened|occurred|started after|began after)\b/i.test(q1Snip);
+      if (!hasQ1Trigger) q1_missing.push("what was happening when headaches first started - a specific incident, an injury, a period of high stress, or a particular assignment");
+    }
+    const q1_missingStr = q1_missing.length > 0 ? ` Missing: ${q1_missing.join("; ")}.` : "";
+    const q1Note = (q1Written.length > 40)
+      ? `The headache history does not include enough detail for the doctor to establish a service connection.${q1_missingStr}`
+      : `No onset information was provided for when headaches began. This field needs to be completed.`;
     gaps.push({
       section: 'Question 1',
       field: 'Headache History and Timeframe',
       issue: q1Note,
       severity: 'critical',
-      guidance: `State when headaches first started: the approximate year or timeframe, whether it was during or after service, what was happening at the time (deployment, training, a specific incident), and whether they came on suddenly or gradually.`,
+      guidance: `Go beyond just the year. State: (1) approximately when headaches first started; (2) where you were or what you were doing at the time - deployed, in training, back home; (3) what was happening when they first started - a blast, a fall, a head injury, a specific period of extreme stress, or a training accident. These three elements let the doctor write the nexus.`,
       example: `Here is a draft:
 
-"My headaches started around [year]. At the time I was [on active duty / recently separated / deployed to ${locStr}]. They began [suddenly after a specific incident such as a blast, head injury, or vehicle rollover / gradually over time during [deployment or training period]]. I first noticed them when [describe the situation — after an IED detonation nearby, after a fall, after a period of extreme stress during a particular assignment]. Before that I rarely had headaches. They have [continued / gotten progressively worse] since then."
+"My headaches started around [year]. At the time I was [on active duty / recently separated / deployed to ${locStr} / in training at (location)]. They began [suddenly after a specific incident / gradually over a period of time]. I first noticed them [describe the situation: after an IED blast nearby rattled my head and spine, after a vehicle rollover, after a fall during training, after a period of extreme operational stress with little sleep, following a head injury during combatives]. Before that I rarely had headaches. They have [continued / gotten progressively worse] since then."
 
-If there was a specific incident — a blast, a fall, a vehicle accident — mention it clearly here. That connection to service is what the doctor needs to document.`
+If there was a specific incident - a blast, a fall, a vehicle accident - mention it clearly here. That is what gives the doctor the connection to your service.`
     });
   } else passed.push('Q1 — Headache History Timeframe');
 
@@ -1134,23 +1189,39 @@ Describe what your actual service looked like on a typical day. That is what the
     .replace(/\d{1,2}\/\d{1,2}\/\d{4}/g, '')  // MM/DD/YYYY dates
     .replace(/did symptoms first occur during active service[^\n]*/gi, '')  // prompt line
     .replace(/were symptoms documented or treated during service[^\n]*/gi, '');  // prompt line
-  const hasSectionVAnswers = sectionVAnswerWords >= 25 && hasTimeframe(sectionVTimeframeText);
-  if (!hasSectionVAnswers) {
+  // Onset depth: a year alone is not enough. Require year + location/context + triggering event.
+  const hasSectionVOnsetDepth = sectionVAnswerWords >= 25 &&
+    hasTimeframe(sectionVTimeframeText) &&
+    hasOnsetDepth(sectionVTimeframeText);
+
+  // Identify which element(s) are missing for a targeted gap message
+  const sectionVMissingElements: string[] = [];
+  if (!hasTimeframe(sectionVTimeframeText)) sectionVMissingElements.push('an approximate year or timeframe for when each condition started');
+  else {
+    if (!hasLocation(sectionVTimeframeText)) sectionVMissingElements.push('where the condition started or what context you were in at the time (deployment location, base, physical duty environment)');
+    const hasTriggerV = /\b(while|during|after|when|following|from|because|due to|as a result|carrying|lifting|running|falling|fall|impact|blast|explosion|IED|convoy|patrol|training|exercise|jump|rappel|ruck|rucksack|brace|bending|twisting|collision|vehicle|rollover|accident|incident|stressor|deployed|deployment|mission|operation|on duty|in the field|working|operating|assignment|sustained|got|took|received|happened|occurred|started after|began after|developed after|developed during|began during|started during)\b/i.test(sectionVTimeframeText);
+    if (!hasTriggerV) sectionVMissingElements.push('what was happening when the condition started — the specific activity, incident, or pattern of exposure that triggered it');
+  }
+
+  if (!hasSectionVOnsetDepth) {
     const v_snip = sectionVText.trim();
-    const v_note = v_snip.length > 200
-      ? `Section V describes the conditions but does not include specific timeframes for when each condition began or how they developed over time. The doctor needs to know approximately when each condition started and whether it traces back to service.`
-      : `Section V is incomplete. No timeframes or dates were provided for when conditions began. This section needs to be filled in for each condition being claimed.`;
+    const missingList = sectionVMissingElements.length > 0
+      ? `Missing: ${sectionVMissingElements.join('; ')}.`
+      : 'The onset description needs more specificity.';
+    const v_note = sectionVAnswerWords < 25
+      ? `Section V is incomplete. No onset information was provided for when conditions began. This section needs to be filled in for each condition being claimed.`
+      : `Section V provides a year for when conditions started but does not go far enough. A year alone is not enough for the doctor to establish a service connection. ${missingList}`;
     gaps.push({
       section: 'Section V',
       field: 'Condition Onset and History',
       issue: v_note,
       severity: 'critical',
-      guidance: `For each condition being claimed, provide: approximately when it started (year or timeframe), whether it began during active duty or after separation, what incident or pattern of exposure is believed to have caused or contributed to it, and how it has progressed since then.`,
+      guidance: `For each condition, go beyond the year. State: (1) where you were or what you were doing when it started — deployed to ${locStr}, stationed at a specific base, in training, back stateside; (2) the specific activity, incident, or pattern that triggered it — a fall, carrying heavy gear, an IED blast, chronic stress, sleep deprivation; and (3) how the condition has progressed since it started. A year alone gives the doctor a when but not a why. The why is what connects it to your service.`,
       example: `Here is a draft template to use for each condition:
 
-"[Condition name]: This condition started around [year]. At the time I was [on active duty / recently separated / deployed to ${locStr}]. I believe it is connected to my service because [describe the connection — repeated exposure to blast concussions, carrying heavy loads daily, sleeping in extreme conditions, chronic stress during deployment, a specific incident]. Since separation the condition has [stayed the same / gotten progressively worse / resulted in medical treatment including (describe treatment)]. It currently affects my ability to [describe current functional impact]."
+"[Condition name]: This condition started around [year]. At the time I was [on active duty / recently separated / deployed to ${locStr} / stationed at (base)]. It began [suddenly after a specific incident / gradually over time]. I first noticed it when [describe the situation: I fell from a vehicle during a training exercise, I was carrying heavy gear on a 12-mile ruck, I experienced an IED blast that jolted my entire body, I sustained repeated impacts during combatives training, I was under constant high-stress operations with no recovery time]. Before that this was not an issue. Since then the condition has [stayed the same / gotten progressively worse / spread to include (area or symptom)]. It currently affects my ability to [describe functional impact]."
 
-Complete this for every condition listed in this form. Each one needs its own timeline and story.`
+Complete this for every condition listed. Each one needs its own story — not just a year.`
     });
   } else passed.push('Section V — Condition Onset Timeframes');
 
@@ -1245,15 +1316,24 @@ Complete this for every condition listed in this form. Each one needs its own ti
   // Section VI requires substantive detail — not just any MH keyword mention.
   // Jordan's one sentence "The anxiety prohibits me from concerts" (25 words, has 'anxiety') was passing.
   // Require: enough words (40+) AND both a service/onset reference AND a current impact reference.
-  const hasMHServiceRef = /\b(during service|active duty|deployed|deployment|in the marine|in the army|in the military|while serving|when i was in|in.service|combat|jordan|training|stressor|exposed|isis|threat|mission|watch|patrol|were there|was there)\b/i.test(sectionVIText);
+  const hasMHServiceRef = /\b(during service|active duty|deployed|deployment|in the marine|in the army|in the military|while serving|when i was in|in.service|combat|training|stressor|exposed|isis|threat|mission|watch|patrol|were there|was there)\b/i.test(sectionVIText);
   const hasMHCurrentImpact = /\b(currently|still|today|now|daily|every day|affect|impact|prevent|unable|cannot|relationship|work|sleep|isolat|avoid|function|struggle|difficult|hard time)\b/i.test(sectionVIText);
-  const hasMHKeywords = sectionVIAnswerWords >= 40 && hasMHServiceRef && hasMHCurrentImpact &&
+  // Require at least one specific event, stressor, or incident named
+  const hasMHEventDetail = /\b(witness|saw|watch|killed|died|casualt|explosion|blast|IED|fired|incoming|crash|rollover|attack|ambush|assault|rape|MST|harassment|patrol|convoy|checkpoint|mission|incident|accident|happened|occurred|event|stressor|trauma|specific|what happened|the day|the time|one day|one night)\b/i.test(sectionVIText);
+  const hasMHKeywords = sectionVIAnswerWords >= 40 && hasMHServiceRef && hasMHCurrentImpact && hasMHEventDetail &&
     /\b(ptsd|anxiety|depression|trauma|nightmare|flashback|hypervigilance|avoid|isolat|mood|anger|irritab|panic|counsel|therapy|MST|combat stress)\b/i.test(sectionVIText);
   if (!hasMHKeywords) {
     const mh_snip = findAnswer(text, /section\s*VI|mental health|psychiatric|trauma|PTSD/i);
-    const mh_note = mh_snip && wordCount(mh_snip) > 4
-      ? `Section VI mentions mental health but does not describe specific traumatic events from service, the nature of the mental health condition, or how it currently affects daily life. The doctor needs that level of detail to make the nexus connection.`
-      : `Section VI appears to be blank or nearly blank. This section is required. The doctor needs to understand the client’s mental health history, traumatic events from service, and the current effect on daily functioning.`;
+    // Build targeted missing list
+    const vi_missing: string[] = [];
+    if (!hasMHServiceRef) vi_missing.push("a connection to your military service - when during or after service your symptoms started");
+    if (!hasMHEventDetail) vi_missing.push("at least one specific event or stressor from service that contributed to your mental health - not just that you were deployed, but what happened and when");
+    if (!hasMHCurrentImpact) vi_missing.push("how symptoms currently affect your daily life - sleep, work, relationships, avoidance behaviors");
+    if (sectionVIAnswerWords < 40) vi_missing.push("more detail overall - this section needs a full paragraph, not a sentence or two");
+    const vi_missingStr = vi_missing.length > 0 ? ` Missing: ${vi_missing.join("; ")}.` : "";
+    const mh_note = (mh_snip && wordCount(mh_snip) > 4)
+      ? `Section VI mentions mental health but does not go deep enough for the doctor to establish a nexus.${vi_missingStr}`
+      : `Section VI appears to be blank or nearly blank. This section is required. The doctor needs to understand the mental health history, traumatic events from service, and the current effect on daily functioning.`;
     gaps.push({
       section: 'Section VI',
       field: 'Mental Health History and Trauma',
