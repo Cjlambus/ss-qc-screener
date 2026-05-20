@@ -285,14 +285,27 @@ export function buildClientProfile(allTexts: { formType: string; text: string }[
   // — Named symptoms: collect distinct words the client used to describe symptoms
   const namedSymptomsRaw: string[] = [];
   for (const { text } of allTexts) {
-    // MH: current symptoms field
+    // MH: current symptoms field — only grab lines that look like client-written symptom text
     const sympIdx = text.search(/describe current emotional or behavioral symptoms/i);
     if (sympIdx !== -1) {
-      const snip = text.substring(sympIdx, sympIdx + 400);
-      const lines = snip.split('\n').slice(1, 6);
+      // Stop at next section label or 300 chars, whichever comes first
+      const nextSectionIdx = text.search(/\bB\.\s*Trauma|Section\s*B|Onset.*Duration|Approximate Onset/i);
+      const windowEnd = (nextSectionIdx > sympIdx && nextSectionIdx !== -1) ? nextSectionIdx : sympIdx + 300;
+      const snip = text.substring(sympIdx, windowEnd);
+      const lines = snip.split('\n').slice(1, 5);
       for (const line of lines) {
         const t = line.trim();
-        if (t.length > 2 && !/^[\u2610\u2611\u2612]|section|document ref|page \d/i.test(t)) namedSymptomsRaw.push(t);
+        // Reject: empty, checkboxes, dates (2026-05-11), SSNs (xxx-xx-xxxx), branch codes, doc refs
+        if (
+          t.length < 3 ||
+          /^[\u2610\u2611\u2612]/.test(t) ||
+          /^\d{4}-\d{2}-\d{2}/.test(t) ||          // date like 2026-05-11
+          /^\d{3}-\d{2}-\d{4}/.test(t) ||          // SSN like 516-06-6936
+          /^(USN|USMC|USAF|USCG|USA)$/.test(t) ||  // branch code alone
+          /section|document ref|page \d|date of birth|ssn|social security/i.test(t) ||
+          /^[A-Z0-9]{4,}-[A-Z0-9]{4,}/i.test(t)   // doc ref ID
+        ) continue;
+        namedSymptomsRaw.push(t);
       }
     }
     // RFI Section V: condition names
@@ -300,10 +313,11 @@ export function buildClientProfile(allTexts: { formType: string; text: string }[
     if (condMatch) condMatch.forEach(m => namedSymptomsRaw.push(m.split(':').pop()?.trim() || ''));
   }
   const namedSymptoms = [...new Set(namedSymptomsRaw.filter(s =>
-    s.length > 2 && s.length < 200 &&
-    // Reject document ref IDs (e.g. 3SA2C-VG6GG-GJHWX-UG493) and form metadata
+    s.length > 2 && s.length < 150 &&
     !/^[A-Z0-9]{4,}-[A-Z0-9]{4,}/i.test(s) &&
-    !/document ref|page \d|date:|ssn/i.test(s)
+    !/document ref|page \d|date:|ssn|social security/i.test(s) &&
+    !/^\d{3}-\d{2}-\d{4}$/.test(s) &&   // reject raw SSN
+    !/^\d{4}-\d{2}-\d{2}$/.test(s)      // reject raw date
   ))];
 
   // — Onset year and context
@@ -724,21 +738,20 @@ function evaluateMentalHealth(
     gaps.push({
       section: 'Section A — Presenting Concerns',
       field: 'Current Symptoms Description',
-      issue: `What was written — ${whatTheyWrote} — is a label, not a description. The doctor needs to understand how each symptom actually shows up in your life: how often, how severe, and what it stops you from doing.`,
+      issue: `You wrote ${whatTheyWrote} — that is a starting point, but the doctor needs more than a name. They need to know what that actually looks like for you on a regular day. How often does it hit? How bad does it get? What can you not do when it does?`,
       severity: 'critical',
-      guidance: `For each symptom you listed, answer three questions: How often does it happen? How bad does it get? What does it stop you from doing? Do not just name the condition — walk the doctor through what it looks like on a typical day.`,
+      guidance: `For each thing you listed, just talk through it like you would explain it to someone who has never dealt with it. How often? How bad? What does it stop you from doing?`,
       example: (() => {
-        // Anchor to what client actually named, fall back to generic only if nothing written
         const symptomsBase = symptomAnchor
-          ? `You mentioned ${symptomAnchor}. For each one, describe what it actually looks like in your day-to-day life:`
-          : `For each symptom you listed, describe what it actually looks like:`;
+          ? `You wrote down ${symptomAnchor}. Go through each one and just describe what it is actually like:`
+          : `Go through each thing you listed and describe what it is actually like:`;
         const fiLine = fiAnchor
-          ? `\n\nYou already wrote: "${fiAnchor.substring(0, 200)}" — that is exactly the kind of detail that belongs here too. Expand on it for each symptom.`
+          ? `\n\nYou already wrote this somewhere else on the form: "${fiAnchor.substring(0, 200)}" — that is exactly what we need here too. Just say the same kind of thing for each symptom.`
           : '';
         const scoreLine = scoresSummary
-          ? `\n\nYour scores (${scoresSummary}) indicate severe symptoms. The doctor needs to understand what those numbers look like in real life — what a bad day actually feels like for you.`
+          ? `\n\nYour scores came back high (${scoresSummary}). The doctor needs to hear from you what those numbers actually feel like in real life.`
           : '';
-        return `${symptomsBase}\n\n"My [symptom] hits [how often — most days / every day / in waves]. When it does, I [describe what happens — what you cannot do, what you feel, what you stop doing]. It has affected [describe a specific area of your life — work, sleep, relationships, daily activities]."\n\nRepeat this for each symptom you listed.${fiLine}${scoreLine}\n\nUpdate this with your actual experience — the doctor needs your real story, not a general description.`;
+        return `${symptomsBase}\n\n"My [symptom] — it hits me [how often: every day / most days / a few times a week]. When it does, I [say what happens in plain terms — what you stop doing, how you feel, what you can not get yourself to do]. It has gotten in the way of [name something real — going to work, being around people, sleeping, taking care of things at home]."\n\nDo that for each thing you listed.${fiLine}${scoreLine}\n\nJust write it in your own words. You do not need to sound like a doctor.`;
       })()
     });
   } else {
@@ -790,13 +803,13 @@ function evaluateMentalHealth(
       field: 'Onset and Duration of Symptoms',
       issue: onsetNote,
       severity: 'critical',
-      guidance: `This field needs three things: (1) an approximate year or timeframe for when symptoms first started; (2) a connection to your service - did they start during deployment, shortly after getting out, or gradually after separation; (3) what you first noticed - trouble sleeping, being on edge, withdrawing from people, nightmares, irritability, something changed. That combination gives the doctor a timeline and a starting point for the nexus.`,
+      guidance: `Three things the doctor needs here: roughly when it started, whether it connects to your time in the military, and what you first noticed was off. That is it. Just walk through it in your own words.`,
       example: (() => {
-        const yearLine = onsetAnchor ? `You wrote ${onsetAnchor} — that is a start. Now add the context around it:` : 'Start with an approximate year, then add context:';
-        const symLine = symptomAnchor ? ` At first I noticed my ${symptomAnchor} — ` : ' At first I noticed [';
-        const jobLine = profile.mos ? ` As ${article(profile.mos)} ${profile.mos}, the nature of that work — [describe what about your specific duties or assignments stayed with you] — is part of what I believe contributed to where I am today.` : '';
-        const jobDescLine = profile.jobDescription ? `\n\nYour role as ${profile.mos || 'a service member'} is relevant context — think about what that job required of you, what you were exposed to, and what you had to carry because of it.` : '';
-        return `${yearLine}\n\n"My symptoms started around ${onsetAnchor || '[year]'} — [during my time in ${firstLoc} / shortly after I separated from service / in the years following my time in the military].${symLine}[describe what changed: could not sleep, constantly on edge, stopped wanting to be around people, no patience, anger not normal for me].${jobLine} Over time it got worse. The symptoms have been [ongoing ever since / getting progressively worse]. It has been approximately [X] years since this started."\n\nIf a specific event triggered the start, mention it. If it built up gradually over time, say that.${jobDescLine} The doctor needs a clear picture of when this started and what it looked like in the beginning.`;
+        const yearLine = onsetAnchor ? `You wrote ${onsetAnchor} — good start. Now just fill in around it:` : 'Start with roughly when, then just say what was going on:';
+        const symLine = symptomAnchor ? ` The first thing I noticed was my ${symptomAnchor} — ` : ' The first thing I noticed was [';
+        const jobLine = profile.mos ? ` Being ${article(profile.mos)} ${profile.mos} — [say what that job put you through, what you were dealing with, what stuck with you] — that is a big part of where I think this comes from.` : '';
+        const jobDescLine = profile.jobDescription ? `\n\nThink about what your job as ${profile.mos || 'a service member'} actually put you through day to day. What was the hardest part? What did you carry with you after? That context matters.` : '';
+        return `${yearLine}\n\n"It started around ${onsetAnchor || '[year]'} — [this was during my time in ${firstLoc} / right after I got out / it kind of crept up on me in the years after I separated].${symLine}[say what first felt off: I stopped sleeping right, I was constantly on edge, I stopped wanting to be around people, my temper was not normal, something just changed].${jobLine} It got worse over time. It has been going on for about [X] years now."\n\nIf something specific happened that kicked it off, say that. If it was more of a slow build, say that instead.${jobDescLine}`;
       })()
     });
   } else {
@@ -841,14 +854,14 @@ function evaluateMentalHealth(
       field: 'Traumatic Event Description',
       issue: `The events you described are mentioned but not explained. What is written is a sentence or two — the doctor needs a full account of each event including exactly where you were, what happened step by step, what you physically experienced, and how you felt. Missing: ${traumaMissing.join('; ')}.`,
       severity: 'critical',
-      guidance: `Describe each traumatic event in its own paragraph. Cover all of these: Where were you (country, base, on patrol, in a convoy)? What were you doing right before it happened? What happened, step by step? What did you see, hear, smell, or physically feel? What did you do in the moment? How did you feel right after — and in the days and weeks that followed?`,
+      guidance: `Write out what happened like you are telling someone the story. Where were you, what were you doing, what happened, and how did it hit you after? One event per paragraph. Your own words.`,
       example: (() => {
-        const locHint = profile.locations.length > 0 ? ` — e.g. ${profile.locations[0]}` : '';
-        const jobHint = profile.mos ? ` as ${article(profile.mos)} ${profile.mos}` : '';
+        const locHint = profile.locations.length > 0 ? ` — could be ${profile.locations[0]} or wherever this happened` : '';
+        const jobHint = profile.mos ? `, I was working as ${article(profile.mos)} ${profile.mos}` : '';
         const jobDescHint = profile.jobDescription
-          ? `\n\nThink about your role as ${profile.mos || 'a service member'} — the situations that job put you in, the things you saw or had to handle as part of your duties. Those are the events the doctor needs to hear about.`
+          ? `\n\nThink about what your job as ${profile.mos || 'a service member'} had you dealing with on a regular basis. What kinds of things did that role put you in the middle of? What did you see or have to handle that most people never would? Start there.`
           : '';
-        return `${event1Note} Here is a draft structure — use your actual memory and words, not this exact wording:\n\n"Event 1: [Name the event in your own words — describe what happened, not a label]\nWe were [stationed at / on patrol in / operating out of] [location${locHint}]. It was [day/night/approximate time]. I was [describe what you were doing — your position, your job at that moment${jobHint}]. [Describe exactly what happened, step by step, in your own words]. I [describe what you did in the moment]. I saw [describe what you physically saw — be specific]. In the moment I felt [describe: terrified, helpless, in shock, running on adrenaline]. For days after, I [describe how it stayed with you — could not stop thinking about it, had nightmares, could not sleep, stayed on edge]."\n\nIf there was more than one event, write a separate paragraph for each one using the same structure.${jobDescHint} Write in your own words — the doctor needs your actual account, not a template.`;
+        return `${event1Note} Just tell it like it happened — your own words, not a template:\n\n"[Give it a short name — just what it was]\nWe were at [where you were${locHint}]. It was [day, night, approximate time]${jobHint}. [Say what happened, just walk through it — what you saw, what you did, what went through your head]. After it happened I [say how it stayed with you — could not stop thinking about it, did not sleep, stayed on edge, something shifted]."\n\nIf more than one thing happened, write a separate paragraph for each one.${jobDescHint}`;
       })()
     });
   } else {
@@ -970,16 +983,16 @@ Do not leave this blank — even "None" is an acceptable answer.`
       field: 'Combat / Deployment Details',
       issue: `What was written — ${deployWritten} — only lists locations and the word "combat tours." The doctor needs to know what you actually experienced during those deployments: your role, what you were exposed to, and what the most stressful or dangerous situations were.`,
       severity: 'critical',
-      guidance: `For each deployment, describe: What was your specific job and what did you do day to day? What was the environment like — was it high-threat, high-tempo, physically demanding, mentally exhausting? What types of situations did you find yourself in? What was the most stressful or dangerous part of that deployment for you personally?`,
+      guidance: `For each deployment, just say what your job was, what the day-to-day was actually like, and what was hardest or most stressful about that specific time. Keep it real — your own words.`,
       example: (() => {
         const depJobLine = profile.mos
-          ? `I was deployed as ${article(profile.mos)} ${profile.mos} (${profile.jobLabel}). My day-to-day responsibilities included [describe what you actually did — your specific duties, what a typical shift looked like, what you were responsible for].`
-          : `I was deployed in my assigned role. My day-to-day responsibilities included [describe what you actually did].`;
+          ? `I was out there as ${article(profile.mos)} ${profile.mos}. Day to day I was [say what you actually did — what a normal shift looked like, what you were responsible for, what kept you busy].`
+          : `Day to day I was [say what you actually did — what a normal shift looked like, what you were responsible for].`;
         const depJobDescLine = profile.jobDescription
-          ? `\n\nBased on what you wrote about your duties: "${profile.jobDescription.substring(0, 250)}${profile.jobDescription.length > 250 ? '...' : ''}" — think about what that role specifically required of you and what you were exposed to.`
+          ? `\n\nYou wrote about your duties: "${profile.jobDescription.substring(0, 200)}${profile.jobDescription.length > 200 ? '...' : ''}" — think about what that actually put you through. What did that job expose you to that other people do not see?`
           : '';
-        const locHint = locStr !== 'overseas' ? locStr : '[Location]';
-        return `Here is a draft structure — fill in your actual experience in your own words:\n\n"Deployment 1 — [${locHint} and approximate year]:\n${depJobLine} The environment was [describe the conditions — the physical demands, the pace of operations, the level of stress or threat, what you were exposed to as part of that job]. The part of this deployment that affected me most was [describe something specific you experienced, witnessed, or had to handle as part of your duties].${depJobDescLine}\n\nDeployment 2 — [Location and approximate year]:\n[Use the same structure — your role, your duties, the conditions, and what was most stressful or impactful.]"\n\nWrite what you actually experienced. Just describe what your job was and what that deployment was actually like for you. Every deployment you listed should have its own paragraph.`;
+        const locHint = locStr !== 'overseas' ? locStr : '[where you were deployed]';
+        return `Just write it out for each deployment:\n\n"[${locHint}, approximate year]:\n${depJobLine} The conditions were [say what it was like — the pace, the pressure, the environment, whether you felt safe, what was grinding on you]. The thing that got to me most was [say what it was — something specific you dealt with, saw, or had to carry].${depJobDescLine}\n\n[Next deployment — same thing: where, what you did, what it was like, what was hardest.]"\n\nWrite it like you are telling someone what that time was really like. Every deployment gets its own section.`;
       })()
     });
   } else {
@@ -1043,14 +1056,13 @@ If you feel like you do not have much support, say that — it is important info
       field: 'Daily Life Impact',
       issue: `What was written — ${funcWritten} — covers only ${funcCount} life area${funcCount === 1 ? '' : 's'} and is too brief. The doctor needs a complete picture of how symptoms affect every major part of your life. Missing: ${missingDescriptions}.`,
       severity: 'critical',
-      guidance: `Go through each area of your life and be specific about what has changed since your service. The doctor is not looking for a summary — they need concrete examples. If you work, how has that been affected? What does your sleep actually look like? How have your relationships changed? What do you now avoid that you used to do without thinking?`,
+      guidance: `Just go area by area and say what is actually different now. Work, sleep, relationships, daily stuff. No need to make it fancy — just say what has changed and what you can not do anymore that you used to.`,
       example: (() => {
-        // Anchor to what the client already wrote, then ask them to expand
         const fiWrittenLine = fiAnchor
-          ? `You already started: "${fiAnchor.substring(0, 250)}${fiAnchor.length > 250 ? '...' : ''}" — that is exactly the kind of detail needed. Now add the same level of detail for each life area below:`
-          : 'For each area of your life, describe specifically what has changed:';
-        const symRef = symptomAnchor ? ` (related to your ${symptomAnchor})` : '';
-        return `${fiWrittenLine}\n\n"Work: I currently [work full time / work part time / am unable to work]. My symptoms${symRef} affect my work by [describe — trouble concentrating, short fuse with people, calling out, performance suffering, had to stop working entirely].\n\nSleep: My sleep [describe what your sleep actually looks like — how many hours, do you wake up, what wakes you, how you feel in the morning].\n\nRelationships: My symptoms have [describe what has changed — pulled away from people, short fuse with family, pushing people away, isolating, not opening up].\n\nDaily Life: I now avoid [describe what you no longer do or go — specific places, activities, situations you stay away from because of how they make you feel]."\n\nOnly add what is actually true for you. The more specific, the better.`;
+          ? `You already said it well here: "${fiAnchor.substring(0, 250)}${fiAnchor.length > 250 ? '...' : ''}" — keep going with that same kind of honesty for each area below:`
+          : 'Go through each area and just say what is different now:';
+        const symRef = symptomAnchor ? ` from my ${symptomAnchor}` : '';
+        return `${fiWrittenLine}\n\n"Work: I [am currently working / stopped working / can only do part time]. The reason is [say what gets in the way${symRef} — I can not focus, I blow up at people, I call out all the time, I just could not keep going].\n\nSleep: My sleep [say what it actually looks like — I get maybe X hours, I wake up all the time, I have trouble getting out of bed in the morning, I am exhausted no matter how long I sleep].\n\nRelationships: Things have changed with [people close to you — say how: I pulled away, my temper pushed people away, I do not open up like I used to, my family has noticed a difference].\n\nDay to Day: I stopped [say what you stopped doing or started avoiding — going places, being around crowds, leaving the house some days, things that used to be normal]."\n\nOnly say what is actually true for you. Short and real is better than long and vague.`;
       })()
     });
   } else {
