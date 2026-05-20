@@ -43,6 +43,27 @@ export interface ClientProfile {
   // Headaches specifics
   headacheOnsetWritten: string | null;
   headacheSeverityWritten: string | null;
+
+  // Strategic flags — cross-reference signals
+  hasHighPCL5: boolean;          // PCL-5 >= 50 (clinically significant)
+  hasHighPHQ9: boolean;          // PHQ-9 >= 20 (severe depression)
+  hasHighGAD7: boolean;          // GAD-7 >= 15 (severe anxiety)
+  hasSI: boolean;                // Any suicidal ideation disclosed
+  hasTraumaNarrative: boolean;   // Whether they wrote anything in trauma section
+  hasDeploymentWritten: boolean; // Whether they wrote anything about deployments
+  hasMigraines: boolean;         // Migraines / headaches mentioned anywhere
+  hasTBI: boolean;               // TBI mentioned anywhere
+  hasChronicPain: boolean;       // Chronic pain mentioned anywhere
+  hasNoWork: boolean;            // Unable to work / haven't worked mentioned
+
+  // Job-specific context signals (from MH job description or RFI duties)
+  jobIsAviation: boolean;        // Avionics / aviation / flight line work
+  jobIsInfantry: boolean;        // Infantry / combat arms
+  jobIsMedical: boolean;         // Medical / corpsman / medic
+  jobIsIntelligence: boolean;    // Intel / signals / SIGINT
+  jobIsLogistics: boolean;       // Logistics / supply / motor transport
+  jobHasShiftWork: boolean;      // Mentions mids / rotating shifts / nights
+  jobHasHighTempo: boolean;      // Mentions operational tempo / mission readiness / deployment pressure
 }
 
 export interface QCGap {
@@ -489,6 +510,32 @@ export function buildClientProfile(allTexts: { formType: string; text: string }[
     }
   }
 
+  // — Strategic flags
+  const pcl5Score = scores.find(s => s.name === 'PCL-5');
+  const phq9Score = scores.find(s => s.name === 'PHQ-9');
+  const gad7Score = scores.find(s => s.name === 'GAD-7');
+  const hasHighPCL5 = pcl5Score ? parseInt(pcl5Score.score) >= 50 : false;
+  const hasHighPHQ9 = phq9Score ? parseInt(phq9Score.score) >= 20 : false;
+  const hasHighGAD7 = gad7Score ? parseInt(gad7Score.score) >= 15 : false;
+  const hasSI = suicidalIdeationWritten !== null ||
+    /daily thoughts|thoughts of (what would|death|dying|suicide|ending)|passive suicidal|suicidal ideation/i.test(combined);
+  const hasTraumaNarrative = traumaWritten !== null && traumaWritten.length > 30;
+  const hasDeploymentWritten = deploymentWritten !== null && deploymentWritten.length > 10;
+  const hasMigraines = /migraine|severe headache/i.test(combined);
+  const hasTBI = /\bTBI\b|traumatic brain injury|hit.*head|head.*hit|hit.*concrete|hit.*wall|concussion/i.test(combined);
+  const hasChronicPain = /chronic pain|constant pain|pain every day|daily pain/i.test(combined);
+  const hasNoWork = /haven.?t worked|unable to work|can.?t work|stopped working|not working|no longer work|two years/i.test(combined);
+
+  // — Job-specific context signals
+  const jobContext = ((jobDescriptionProfile || '') + ' ' + (militaryDutiesWritten || '') + ' ' + (mosProfile || '')).toLowerCase();
+  const jobIsAviation = /avion|aviation|flight line|aircraft|airframe|electronics|radar|sensor|nav system|electronic warfare|rotary|fixed wing|at \(/i.test(jobContext);
+  const jobIsInfantry = /infantry|combat arms|11b|0311|rifleman|grunt|machine gun|mortar|sniper|ranger|special forces/i.test(jobContext);
+  const jobIsMedical = /corpsman|medic|nurse|medical|combat medicine|68w|hm\b/i.test(jobContext);
+  const jobIsIntelligence = /intelligence|intel|sigint|imagery|analyst|cryptolog|35f|35m|0231/i.test(jobContext);
+  const jobIsLogistics = /logistics|supply|motor transport|88m|3051|warehousing|distribution/i.test(jobContext);
+  const jobHasShiftWork = /mids|midwatch|rotating shift|night shift|12.hour|24.hour|watch standing|duty rotation/i.test(jobContext);
+  const jobHasHighTempo = /operational tempo|mission readiness|high tempo|op tempo|deployment pressure|surge|combat readiness|maintenance cycle/i.test(jobContext);
+
   return {
     branch: branchProfile,
     mos: mosProfile,
@@ -511,6 +558,23 @@ export function buildClientProfile(allTexts: { formType: string; text: string }[
     giSymptomsWritten,
     headacheOnsetWritten,
     headacheSeverityWritten,
+    hasHighPCL5,
+    hasHighPHQ9,
+    hasHighGAD7,
+    hasSI,
+    hasTraumaNarrative,
+    hasDeploymentWritten,
+    hasMigraines,
+    hasTBI,
+    hasChronicPain,
+    hasNoWork,
+    jobIsAviation,
+    jobIsInfantry,
+    jobIsMedical,
+    jobIsIntelligence,
+    jobIsLogistics,
+    jobHasShiftWork,
+    jobHasHighTempo,
   };
 }
 
@@ -738,20 +802,52 @@ function evaluateMentalHealth(
     gaps.push({
       section: 'Section A — Presenting Concerns',
       field: 'Current Symptoms Description',
-      issue: `You wrote ${whatTheyWrote} — that is a starting point, but the doctor needs more than a name. They need to know what that actually looks like for you on a regular day. How often does it hit? How bad does it get? What can you not do when it does?`,
+      issue: `You wrote ${whatTheyWrote} — the doctor needs to know what that actually looks like on a regular day, not just the name of it. How often? How bad? What can you not do because of it?`,
       severity: 'critical',
-      guidance: `For each thing you listed, just talk through it like you would explain it to someone who has never dealt with it. How often? How bad? What does it stop you from doing?`,
+      guidance: `Describe each symptom like you are explaining it to someone who has never dealt with it. How often does it happen? How bad does it get? What does it stop you from doing?`,
       example: (() => {
-        const symptomsBase = symptomAnchor
-          ? `You wrote down ${symptomAnchor}. Go through each one and just describe what it is actually like:`
-          : `Go through each thing you listed and describe what it is actually like:`;
-        const fiLine = fiAnchor
-          ? `\n\nYou already wrote this somewhere else on the form: "${fiAnchor.substring(0, 200)}" — that is exactly what we need here too. Just say the same kind of thing for each symptom.`
+        // Build a rich, personalized example anchored to everything we know about this client
+        const parts: string[] = [];
+
+        // Opening anchor — use what they named
+        if (symptomAnchor) {
+          parts.push(`You listed ${symptomAnchor}. For each one, just walk through what it is actually like for you:`);
+        } else {
+          parts.push('For each symptom you listed, walk through what it is actually like:');
+        }
+
+        // Build a job-aware example line
+        const jobLine = profile.jobIsAviation
+          ? `Working ${profile.yearsService ? profile.yearsService + ' years' : ''} in Navy aviation — the flight line, the mids, the pressure of keeping aircraft mission ready — that kind of stress does not just disappear when you get out.`
+          : profile.mos
+          ? `Doing that job as ${article(profile.mos)} ${profile.mos} for ${profile.yearsService ? profile.yearsService + ' years' : 'years'} — what you dealt with does not just go away.`
           : '';
-        const scoreLine = scoresSummary
-          ? `\n\nYour scores came back high (${scoresSummary}). The doctor needs to hear from you what those numbers actually feel like in real life.`
-          : '';
-        return `${symptomsBase}\n\n"My [symptom] — it hits me [how often: every day / most days / a few times a week]. When it does, I [say what happens in plain terms — what you stop doing, how you feel, what you can not get yourself to do]. It has gotten in the way of [name something real — going to work, being around people, sleeping, taking care of things at home]."\n\nDo that for each thing you listed.${fiLine}${scoreLine}\n\nJust write it in your own words. You do not need to sound like a doctor.`;
+
+        // Draft example using their actual words where possible
+        const draftSymptom = symptomAnchor || '[your symptom]';
+        const draftLines: string[] = [
+          `"My ${draftSymptom} — it is there pretty much [every day / most days / whenever I get triggered]. When it hits, I [say what happens: I shut down, I can not get out of bed, I snap at people, I can not focus on anything, I just go numb]. It has messed with [name what it affects most — my sleep, my relationships, being able to hold down a job, leaving the house]."`,
+        ];
+
+        // Pull in their functional impact writing as a model
+        if (fiAnchor && fiAnchor.length > 20) {
+          draftLines.push(`\nYou already described it well in another section: "${fiAnchor.substring(0, 220)}${fiAnchor.length > 220 ? '...' : ''}" — that is the kind of honesty that needs to be in this section too. Say the same thing here for each symptom.`);
+        }
+
+        // Score cross-reference
+        if (scoresSummary) {
+          draftLines.push(`\nNote: Your scores (${scoresSummary}) are on the severe end. The doctor is going to see those numbers — this section is your chance to put real words to what they mean in your day-to-day life.`);
+        }
+
+        // SI cross-reference
+        if (profile.hasSI && profile.suicidalIdeationWritten) {
+          draftLines.push(`\nYou also mentioned "${profile.suicidalIdeationWritten.substring(0, 150)}" — that is significant. Make sure your symptom description reflects how serious things have gotten.`);
+        }
+
+        parts.push(draftLines.join(''));
+        if (jobLine) parts.push(jobLine);
+        parts.push('Write it in your own words. Short and honest beats long and clinical every time.');
+        return parts.join('\n\n');
       })()
     });
   } else {
@@ -803,13 +899,46 @@ function evaluateMentalHealth(
       field: 'Onset and Duration of Symptoms',
       issue: onsetNote,
       severity: 'critical',
-      guidance: `Three things the doctor needs here: roughly when it started, whether it connects to your time in the military, and what you first noticed was off. That is it. Just walk through it in your own words.`,
+      guidance: `Three things needed here: roughly when it started, how it connects to your time in the service, and what you first noticed was different. Just say it in your own words.`,
       example: (() => {
-        const yearLine = onsetAnchor ? `You wrote ${onsetAnchor} — good start. Now just fill in around it:` : 'Start with roughly when, then just say what was going on:';
-        const symLine = symptomAnchor ? ` The first thing I noticed was my ${symptomAnchor} — ` : ' The first thing I noticed was [';
-        const jobLine = profile.mos ? ` Being ${article(profile.mos)} ${profile.mos} — [say what that job put you through, what you were dealing with, what stuck with you] — that is a big part of where I think this comes from.` : '';
-        const jobDescLine = profile.jobDescription ? `\n\nThink about what your job as ${profile.mos || 'a service member'} actually put you through day to day. What was the hardest part? What did you carry with you after? That context matters.` : '';
-        return `${yearLine}\n\n"It started around ${onsetAnchor || '[year]'} — [this was during my time in ${firstLoc} / right after I got out / it kind of crept up on me in the years after I separated].${symLine}[say what first felt off: I stopped sleeping right, I was constantly on edge, I stopped wanting to be around people, my temper was not normal, something just changed].${jobLine} It got worse over time. It has been going on for about [X] years now."\n\nIf something specific happened that kicked it off, say that. If it was more of a slow build, say that instead.${jobDescLine}`;
+        const parts: string[] = [];
+
+        const yearOpener = onsetAnchor
+          ? `You wrote ${onsetAnchor} — that is a start. Now add the context around it:`
+          : 'Start with roughly when, then explain what was going on around that time:';
+        parts.push(yearOpener);
+
+        // Build a job-aware, personalized draft
+        const jobContext = profile.jobIsAviation
+          ? `During my time in the Navy as ${article(profile.mos || 'an Avionics Tech')} ${profile.mos || 'Avionics Technician'} — the flight line work, long shifts${profile.jobHasShiftWork ? ', the rotating mids' : ''}, the pressure of keeping aircraft mission ready — the stress built up over time in ways I did not recognize at first.`
+          : profile.mos
+          ? `Working as ${article(profile.mos)} ${profile.mos} — [say what that role put you through day to day, what built up over time] — that is where I think it started.`
+          : `My time in the military — [say what that was like, what built up over time] — that is where I think it started.`;
+
+        const symFirst = symptomAnchor
+          ? `Around ${onsetAnchor || '[year]'}, the first thing I really noticed was [describe what changed — your ${symptomAnchor} showed up differently, you stopped sleeping right, you were on edge all the time, something shifted that you could not shake].`
+          : `Around ${onsetAnchor || '[year]'}, I started noticing [describe what first felt off — sleep, mood, temper, pulling away from people, something just changed].`;
+
+        const progressLine = `It did not get better on its own. It has been going on for about [X] years now and it is worse than when it started.`;
+
+        // Cross-reference: if scores are high and onset is early, flag the timeline
+        const scoreLine = scoresSummary && onsetAnchor
+          ? `\nYour scores today (${scoresSummary}) show how much this has built. That timeline — starting around ${onsetAnchor} and getting worse since — is important for the doctor to see.`
+          : '';
+
+        // Cross-reference: if TBI present, flag it
+        const tbiLine = profile.hasTBI
+          ? `\nYou also mentioned a head injury somewhere on your forms — if that happened during your service and contributed to where things started, mention it here.`
+          : '';
+
+        parts.push(`"${jobContext}\n\n${symFirst} ${progressLine}"${scoreLine}${tbiLine}`);
+        parts.push(`If something specific happened that kicked things off, say that. If it was more of a slow build over time, say that instead. Either way is valid — the doctor just needs to understand the timeline.`);
+
+        if (profile.jobDescription) {
+          parts.push(`Think back to what that job actually required of you — you already wrote: "${profile.jobDescription.substring(0, 200)}${profile.jobDescription.length > 200 ? '...' : ''}" — what specifically about that wore on you over time?`);
+        }
+
+        return parts.join('\n\n');
       })()
     });
   } else {
@@ -842,26 +971,73 @@ function evaluateMentalHealth(
   if (!traumaHasDetail) traumaMissing.push('a step-by-step account of what happened');
   if (!traumaHasEmotional) traumaMissing.push('your emotional and psychological reaction — how it felt in the moment and after');
 
-  if (traumaMissing.length > 0) {
+  // Determine which trauma path to take based on what they wrote and their profile
+  const traumaIsBlank = traumaWords < 5;
+  const highScoresNoTrauma = (profile.hasHighPCL5 || profile.hasHighPHQ9) && traumaIsBlank;
+
+  if (traumaMissing.length > 0 || traumaIsBlank) {
     // Build event-specific prompts based on what they mentioned
     const event1Note = mentionsLightning
       ? 'You mentioned witnessing a Marine get struck by lightning while taking down an antenna.'
       : mentionsHummer
       ? 'You mentioned a Humvee in the formation flipping over and rushing to help.'
-      : 'You mentioned witnessing or being involved in a traumatic incident.';
+      : traumaIsBlank
+      ? ''
+      : 'You mentioned something happened — but the doctor needs the full story.';
+
+    // Strategic issue text — if high scores + blank trauma, flag it directly
+    const issueText = highScoresNoTrauma
+      ? `This section is blank, but your scores (${scoresSummary || 'PCL-5/PHQ-9'}) are in the severe range. The doctor is going to ask: what happened? You have two options here — describe a specific event or events, OR explain the kind of accumulated stress and pressure your job put you through over time. Either is a valid path. But leaving this blank is not.`
+      : traumaIsBlank
+      ? `This section is blank. The doctor needs to understand what you went through during your service — either a specific event, or the kind of ongoing pressure and stress your job put you under over time.`
+      : `What is written is a start, but the doctor needs more. Missing: ${traumaMissing.join('; ')}.`;
+
     gaps.push({
       section: 'Section B — Trauma and Stress Exposure',
       field: 'Traumatic Event Description',
-      issue: `The events you described are mentioned but not explained. What is written is a sentence or two — the doctor needs a full account of each event including exactly where you were, what happened step by step, what you physically experienced, and how you felt. Missing: ${traumaMissing.join('; ')}.`,
+      issue: issueText,
       severity: 'critical',
-      guidance: `Write out what happened like you are telling someone the story. Where were you, what were you doing, what happened, and how did it hit you after? One event per paragraph. Your own words.`,
+      guidance: traumaIsBlank
+        ? `Two paths: (1) If a specific thing happened, write it out like you are telling the story — where, what, how it hit you after. (2) If it was more of a slow grind — the job, the pace, the pressure, what you were exposed to day after day — describe that instead. Both are legitimate.`
+        : `Write out what happened like you are telling someone the story. Where were you, what were you doing, what happened, and how did it hit you after? Your own words.`,
       example: (() => {
-        const locHint = profile.locations.length > 0 ? ` — could be ${profile.locations[0]} or wherever this happened` : '';
-        const jobHint = profile.mos ? `, I was working as ${article(profile.mos)} ${profile.mos}` : '';
-        const jobDescHint = profile.jobDescription
-          ? `\n\nThink about what your job as ${profile.mos || 'a service member'} had you dealing with on a regular basis. What kinds of things did that role put you in the middle of? What did you see or have to handle that most people never would? Start there.`
-          : '';
-        return `${event1Note} Just tell it like it happened — your own words, not a template:\n\n"[Give it a short name — just what it was]\nWe were at [where you were${locHint}]. It was [day, night, approximate time]${jobHint}. [Say what happened, just walk through it — what you saw, what you did, what went through your head]. After it happened I [say how it stayed with you — could not stop thinking about it, did not sleep, stayed on edge, something shifted]."\n\nIf more than one thing happened, write a separate paragraph for each one.${jobDescHint}`;
+        const parts: string[] = [];
+
+        if (traumaIsBlank) {
+          // Path 1: specific event
+          const locHint = profile.locations.length > 0 ? profile.locations[0] : '[where you were stationed or deployed]';
+          const jobHint = profile.mos ? `as ${article(profile.mos)} ${profile.mos}` : 'in my role';
+
+          // Path 2: occupational stress (especially relevant for aviation, high-tempo jobs)
+          const occStressExample = profile.jobIsAviation
+            ? `"Path 2 — if it was more of a buildup than one event:\nWorking the flight line ${profile.yearsService ? 'for ' + profile.yearsService + ' years' : ''} as ${article(profile.mos || 'an AT')} ${profile.mos || 'Avionics Technician'} — the pace never let up. ${profile.jobHasShiftWork ? 'Rotating mids, days, swings — your body never adjusted. ' : ''}Every aircraft that left the deck had to be right, and that weight was on you. Over time, the accumulated stress of that environment — the pressure, the pace, what you saw and dealt with day after day — is what I believe broke me down mentally. It was not one moment. It was years of it."\n\nNote: The occupational stress argument is legitimate and the doctor can use it. But you need to describe it in enough detail that they understand what you were actually dealing with.`
+            : profile.mos
+            ? `"Path 2 — if it was more of a slow grind than a single event:\nWorking as ${article(profile.mos)} ${profile.mos} — [describe what that job put you through over time: the pace, the pressure, what you were exposed to, what you had to carry]. It was not one thing. It was the accumulation of it all over [X] years that I believe is what got to me."\n\nNote: Accumulated occupational stress is a valid path if a single incident does not apply. The doctor needs detail though.`
+            : `"Path 2 — if it was more of a slow grind:\nMy service was not one big event. It was the accumulation of [describe: the pace, the pressure, what you were exposed to, what you had to deal with day after day] over [X] years. That is what I believe broke me down."`;
+
+          parts.push(`This section is blank right now. You have two paths — pick whichever is true for you:\n\n"Path 1 — if something specific happened:\n[Give the event a short name]\nIt happened at [${locHint}]. I was there ${jobHint}. [Say what happened in your own words — walk through it]. After that, I [say how it stuck with you — could not stop thinking about it, stopped sleeping, went on edge, something changed]."`
+          );
+          parts.push(occStressExample);
+
+          if (highScoresNoTrauma) {
+            const _pcl5 = profile.scores.find(s => s.name === 'PCL-5');
+            parts.push(`Your PCL-5 score${_pcl5 ? ' of ' + _pcl5.score + '/80' : ''} is in the severe range. That score does not come from nothing — the doctor is going to want to understand what drove it. This is the section where you explain that.`);
+          }
+
+          if (profile.hasTBI) {
+            parts.push(`You also mentioned a head injury on your forms. If that happened during your service and contributed to how things have been, include it here.`);
+          }
+        } else {
+          // They wrote something, just not enough detail
+          const locHint = profile.locations.length > 0 ? ` — could be ${profile.locations[0]} or wherever this happened` : '';
+          const jobHint = profile.mos ? `, I was working as ${article(profile.mos)} ${profile.mos}` : '';
+          parts.push(`${event1Note} Just tell it like it happened — your words, not a template:\n\n"[Short name for what happened]\nWe were at [where${locHint}]. It was [time of day/approximate date]${jobHint}. [Walk through it step by step — what you saw, what you did, what went through your head]. After it happened I [say how it stuck with you — could not stop thinking about it, did not sleep, stayed on edge, something shifted]."\n\nIf more than one thing happened, write a separate paragraph for each one.`);
+          if (profile.jobDescription) {
+            parts.push(`Think about what your job as ${profile.mos || 'a service member'} had you dealing with. What did that role put you in the middle of that most people never see?`);
+          }
+        }
+
+        return parts.join('\n\n');
       })()
     });
   } else {
@@ -983,16 +1159,33 @@ Do not leave this blank — even "None" is an acceptable answer.`
       field: 'Combat / Deployment Details',
       issue: `What was written — ${deployWritten} — only lists locations and the word "combat tours." The doctor needs to know what you actually experienced during those deployments: your role, what you were exposed to, and what the most stressful or dangerous situations were.`,
       severity: 'critical',
-      guidance: `For each deployment, just say what your job was, what the day-to-day was actually like, and what was hardest or most stressful about that specific time. Keep it real — your own words.`,
+      guidance: `For each deployment, say what your job was, what a normal day looked like, and what was hardest or most stressful about that time. Real and specific beats long and vague.`,
       example: (() => {
-        const depJobLine = profile.mos
-          ? `I was out there as ${article(profile.mos)} ${profile.mos}. Day to day I was [say what you actually did — what a normal shift looked like, what you were responsible for, what kept you busy].`
-          : `Day to day I was [say what you actually did — what a normal shift looked like, what you were responsible for].`;
-        const depJobDescLine = profile.jobDescription
-          ? `\n\nYou wrote about your duties: "${profile.jobDescription.substring(0, 200)}${profile.jobDescription.length > 200 ? '...' : ''}" — think about what that actually put you through. What did that job expose you to that other people do not see?`
-          : '';
-        const locHint = locStr !== 'overseas' ? locStr : '[where you were deployed]';
-        return `Just write it out for each deployment:\n\n"[${locHint}, approximate year]:\n${depJobLine} The conditions were [say what it was like — the pace, the pressure, the environment, whether you felt safe, what was grinding on you]. The thing that got to me most was [say what it was — something specific you dealt with, saw, or had to carry].${depJobDescLine}\n\n[Next deployment — same thing: where, what you did, what it was like, what was hardest.]"\n\nWrite it like you are telling someone what that time was really like. Every deployment gets its own section.`;
+        const parts: string[] = [];
+        const locHint = locStr !== 'overseas' ? locStr : '[where you were]';
+
+        // Build a job-specific deployment draft
+        if (profile.jobIsAviation) {
+          const shiftLine = profile.jobHasShiftWork ? 'Rotating mids and day shifts. ' : '';
+          parts.push(`Here is a starting point based on your background as ${article(profile.mos || 'an AT')} ${profile.mos || 'Avionics Technician'} — fill in your actual experience:\n\n"[${locHint}, approximate year]:\n${shiftLine}I was responsible for [say what you were actually working on — which aircraft systems, what you maintained, what you were accountable for]. When an aircraft went down, it was on us to get it back up. The pressure of that — knowing a jet could not fly if we missed something — was constant. A typical day was [say what it actually looked like — how long, what the pace was, what kept you going]. The hardest part for me was [say what it was — the pace, what you saw, what you had to deal with, what did not leave you when you went home]."
+
+[If you had another deployment, write a separate section for it with the same format.]`);
+        } else if (profile.mos) {
+          parts.push(`Write it out for each deployment in your own words:\n\n"[${locHint}, approximate year]:\nI was out there as ${article(profile.mos)} ${profile.mos}. Day to day I was [say what you were actually doing — what a normal shift looked like, what you were responsible for, what kept you busy]. The conditions were [say what it was really like — the pace, the pressure, whether you felt safe, what was grinding on you]. What got to me most was [something specific you dealt with, saw, or had to carry from that time]."
+
+[Next deployment — same format.]`);
+        } else {
+          parts.push(`Write it out for each deployment:\n\n"[${locHint}, approximate year]:\nDay to day I was [say what you actually did]. The conditions were [say what it was like]. What got to me most was [say what was hardest]."
+
+[Next deployment — same format.]`);
+        }
+
+        // Cross-reference job description if available
+        if (profile.jobDescription) {
+          parts.push(`You described your duties as: "${profile.jobDescription.substring(0, 200)}${profile.jobDescription.length > 200 ? '...' : ''}" — think about what that actually put you through during those deployments. What did that job expose you to that most people never deal with?`);
+        }
+
+        return parts.join('\n\n');
       })()
     });
   } else {
@@ -1056,13 +1249,42 @@ If you feel like you do not have much support, say that — it is important info
       field: 'Daily Life Impact',
       issue: `What was written — ${funcWritten} — covers only ${funcCount} life area${funcCount === 1 ? '' : 's'} and is too brief. The doctor needs a complete picture of how symptoms affect every major part of your life. Missing: ${missingDescriptions}.`,
       severity: 'critical',
-      guidance: `Just go area by area and say what is actually different now. Work, sleep, relationships, daily stuff. No need to make it fancy — just say what has changed and what you can not do anymore that you used to.`,
+      guidance: `Go area by area and say what is actually different now. Work, sleep, relationships, daily stuff. Short and real beats long and vague.`,
       example: (() => {
-        const fiWrittenLine = fiAnchor
-          ? `You already said it well here: "${fiAnchor.substring(0, 250)}${fiAnchor.length > 250 ? '...' : ''}" — keep going with that same kind of honesty for each area below:`
-          : 'Go through each area and just say what is different now:';
-        const symRef = symptomAnchor ? ` from my ${symptomAnchor}` : '';
-        return `${fiWrittenLine}\n\n"Work: I [am currently working / stopped working / can only do part time]. The reason is [say what gets in the way${symRef} — I can not focus, I blow up at people, I call out all the time, I just could not keep going].\n\nSleep: My sleep [say what it actually looks like — I get maybe X hours, I wake up all the time, I have trouble getting out of bed in the morning, I am exhausted no matter how long I sleep].\n\nRelationships: Things have changed with [people close to you — say how: I pulled away, my temper pushed people away, I do not open up like I used to, my family has noticed a difference].\n\nDay to Day: I stopped [say what you stopped doing or started avoiding — going places, being around crowds, leaving the house some days, things that used to be normal]."\n\nOnly say what is actually true for you. Short and real is better than long and vague.`;
+        const parts: string[] = [];
+
+        // Open with what they already wrote if possible
+        if (fiAnchor && fiAnchor.length > 20) {
+          parts.push(`You already said it well: "${fiAnchor.substring(0, 250)}${fiAnchor.length > 250 ? '...' : ''}" — keep going with that same honesty for each area below:`);
+        } else {
+          parts.push('Go through each area of your life and say what is actually different now:');
+        }
+
+        // Build a personalized draft using what we know
+        const workLine = profile.hasNoWork
+          ? `Work: I have not been able to work for [say how long]. My [${symptomAnchor || 'symptoms'}] make it [say what specifically makes work impossible — can not stay focused, get overwhelmed around people, the anxiety/depression takes over, I cannot make myself go].`
+          : `Work: I [am working / stopped working / can only handle part time]. The reason is [say what gets in the way].`;
+
+        const sleepLine = `Sleep: My sleep is [say what it is actually like — how many hours you get, whether you wake up, what mornings feel like, whether you feel rested at all].`;
+
+        const relLine = `Relationships: [Say what has changed — I pulled away from people, my temper has pushed people away, my [wife / family / friends] can see something is wrong, I stopped reaching out].`;
+
+        const dailyLine = `Day to Day: I [say what you stopped doing or avoid now — leaving the house, being around groups, things that used to be normal, activities I used to enjoy].`;
+
+        parts.push(`"${workLine}\n\n${sleepLine}\n\n${relLine}\n\n${dailyLine}"`);
+
+        // Cross-reference SI if present
+        if (profile.hasSI && profile.suicidalIdeationWritten) {
+          parts.push(`You also mentioned: "${profile.suicidalIdeationWritten.substring(0, 150)}" — if that is part of your day to day right now, it belongs in this section too. The doctor needs the full picture.`);
+        }
+
+        // Cross-reference scores
+        if (scoresSummary) {
+          parts.push(`Your scores (${scoresSummary}) back up that things are serious. This section is where you show the doctor what those numbers look like in real life.`);
+        }
+
+        parts.push('Only write what is actually true for you.');
+        return parts.join('\n\n');
       })()
     });
   } else {
