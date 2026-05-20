@@ -19,6 +19,11 @@ export interface QCResult {
 
 // ─── Utilities ─────────────────────────────────────────────────────────────────
 
+// Return 'an' before vowel sounds, 'a' otherwise
+function article(word: string): string {
+  return /^[aeiouAEIOU]/.test(word.trim()) ? 'an' : 'a';
+}
+
 function wordCount(text: string): number {
   return text.trim().split(/\s+/).filter(w => w.length > 1).length;
 }
@@ -154,7 +159,20 @@ export function evaluateForm(text: string, formType: string): QCResult {
 
 // Extract client context from the PDF for use in drafted examples
 function extractClientContext(text: string) {
-  const branch = /\b(usmc|marine corps|marines?|army|navy|air force|air force|coast guard|national guard|reserves?)\b/i.exec(text)?.[0]?.toUpperCase() || 'the military';
+  // Branch: MH form puts the filled-in value on the line BEFORE the label
+  // e.g., "                USN\n            Branch of Service: ____"
+  // So we look at the 3 lines before the label line as well as after it
+  const branch = (() => {
+    const branchLabelIdx = text.search(/Branch\s+of\s+Service/i);
+    if (branchLabelIdx !== -1) {
+      // Grab the 150 chars before the label (previous lines) + 100 chars after
+      const window = text.substring(Math.max(0, branchLabelIdx - 150), branchLabelIdx + 100);
+      const m = /\b(USMC|USN|USAF|USCG|USA\b|Marine Corps|Marines?|Army|Navy|Air Force|Coast Guard|National Guard|Reserves?)\b/i.exec(window);
+      if (m) return m[0].toUpperCase();
+    }
+    // Fallback: scan entire text
+    return /\b(usmc|marine corps|marines?|army|navy|air force|coast guard|national guard|reserves?)\b/i.exec(text)?.[0]?.toUpperCase() || 'the military';
+  })();
 
   // Job code: covers all branches
   // Army/Marines: MOS (e.g. 11B, 0311)
@@ -162,17 +180,23 @@ function extractClientContext(text: string) {
   // Navy/Coast Guard: Rating or Rate (e.g. BM, MM, IT)
   // The RFI form uses the label "Primary MOS / AFSC / Rating" for all branches on one line
   const mos = (() => {
-    // Match the combined field label the form uses
+    // Match all known field label formats across RFI and MH forms:
+    // RFI: "Primary MOS / AFSC / Rating:"
+    // MH:  "MOS / Job Role (with brief description...):"
+    // Navy/CG: "Rating:" or "Rate:"
+    // Air Force: "AFSC:"
+    // Army/Marines: "MOS:"
     const m = /Primary\s+MOS\s*\/\s*AFSC\s*\/\s*Rating\s*:[^\n]{0,10}\n?\s*([A-Za-z0-9][^\n]{2,60})/i.exec(text)
+      || /MOS\s*\/\s*Job\s*Role[^:]{0,80}:\s*\n?\s*([A-Za-z0-9][^\n]{2,80})/i.exec(text)
       || /\bMOS\s*\/\s*AFSC\s*\/\s*Rating\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i.exec(text)
       || /\bAFSC\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i.exec(text)
-      || /\bRating\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i.exec(text)
-      || /\bRate\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i.exec(text)
+      || /^\s*Rating\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/im.exec(text)
+      || /^\s*Rate\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/im.exec(text)
       || /\bMOS\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i.exec(text);
     if (!m) return null;
     const val = m[1].trim();
     // Reject if it looks like a form prompt rather than a client answer
-    if (/^\[|^\(|please|describe|enter|list|if any|your mos|e\.g\.|n\/a|N\/A/i.test(val)) return null;
+    if (/^\[|^\(|please|describe|enter|list|if any|your mos|e\.g\.|n\/a/i.test(val)) return null;
     if (val.length < 2) return null;
     return val;
   })();
@@ -180,32 +204,53 @@ function extractClientContext(text: string) {
   // Branch-appropriate label for the job code
   const jobLabel = (() => {
     const b = branch.toUpperCase();
-    if (/navy|coast guard/i.test(b)) return 'Rating';
-    if (/air force/i.test(b)) return 'AFSC';
+    if (/navy|coast guard|usn|uscg/i.test(b)) return 'Rating';
+    if (/air force|usaf/i.test(b)) return 'AFSC';
     return 'MOS'; // Army, Marines, default
   })();
 
-  // Section III job description — the free-text duties field
-  // Extract the client-typed answer from Section III to use as context in examples
+  // Job description: try two sources in order of preference
+  // 1. MH form: multi-line text immediately after "MOS / Job Role" label
+  // 2. RFI form: client-typed paragraphs in Section III
   const jobDescription = (() => {
+    // Source 1: MH form job description block (lines after MOS/Job Role label)
+    const mosJobIdx = text.search(/MOS\s*\/\s*Job\s*Role[^:]{0,80}:/i);
+    if (mosJobIdx !== -1) {
+      // Grab up to 10 lines after the label line
+      const afterLabel = text.substring(mosJobIdx);
+      const lines = afterLabel.split('\n').slice(1); // skip the label line itself
+      const descLines: string[] = [];
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t) continue;
+        // Stop when we hit the next form section/field
+        if (/^[A-Z]\.|section\s*[0-9IVX]|Date of Birth|Branch of Service|Years of Service|Presenting Concerns/i.test(t)) break;
+        if (t.length > 10) descLines.push(t);
+        if (descLines.length >= 8) break; // cap at 8 lines
+      }
+      const desc = descLines.join(' ').trim();
+      if (desc.length > 20) return desc.substring(0, 600);
+    }
+    // Source 2: RFI Section III free-text duties field
     const sIIIIdx = text.search(/section\s*III\b|SECTION III\b/i);
     const sIVIdx = text.search(/section\s*IV\b|SECTION IV\b/i);
-    if (sIIIIdx === -1) return null;
-    const sIIIText = text.substring(sIIIIdx, sIVIdx > sIIIIdx ? sIVIdx : sIIIIdx + 2000);
-    // Strip the section header and bullet prompt lines, keep only client-typed paragraphs
-    const answerLines = sIIIText
-      .split('\n')
-      .filter(line => {
-        const t = line.trim();
-        if (!t || t.length < 15) return false;
-        if (/^[•\u2022]/.test(t)) return false;          // bullet prompt lines
-        if (/section\s*III/i.test(t)) return false;       // section header
-        if (/describe your typical|physical demands|shift work|stressor|include/i.test(t)) return false; // prompt text
-        return true;
-      })
-      .join(' ')
-      .trim();
-    return answerLines.length > 20 ? answerLines.substring(0, 600) : null;
+    if (sIIIIdx !== -1) {
+      const sIIIText = text.substring(sIIIIdx, sIVIdx > sIIIIdx ? sIVIdx : sIIIIdx + 2000);
+      const answerLines = sIIIText
+        .split('\n')
+        .filter(line => {
+          const t = line.trim();
+          if (!t || t.length < 15) return false;
+          if (/^[•\u2022]/.test(t)) return false;
+          if (/section\s*III/i.test(t)) return false;
+          if (/describe your typical|physical demands|shift work|stressor|include/i.test(t)) return false;
+          return true;
+        })
+        .join(' ')
+        .trim();
+      if (answerLines.length > 20) return answerLines.substring(0, 600);
+    }
+    return null;
   })();
 
   // Location detection: only scan lines that look like client-typed answers.
@@ -261,7 +306,7 @@ function evaluateMentalHealth(
   // Job context hint: if we have the Section III description, pull key phrases to use in examples
   // This keeps examples grounded in what the client actually wrote about their job
   const jobContextHint = ctx.jobDescription
-    ? `\n\nBased on what you wrote about your duties: "${ctx.jobDescription.substring(0, 300)}${ctx.jobDescription.length > 300 ? '...' : ''}"`
+    ? `\n\nBased on what you wrote about your duties: "${ctx.jobDescription.substring(0, 300)}${ctx.jobDescription.length > 300 ? '...' : ''}" — think about what that role specifically required of you and what you were exposed to as part of that job.`
     : '';
 
   // ── A: Presenting Concerns ──
@@ -308,7 +353,10 @@ Update this with your own words and specifics — the doctor needs your real exp
 
   // ── A: Onset ──
   const onsetIdx = text.search(/approximate onset and duration of symptoms/i);
-  const onsetAfter = onsetIdx >= 0 ? text.substring(onsetIdx, onsetIdx + 600) : '';
+  // Limit the onset window to stop at Section B (or next major label) to prevent false-pass from leakage
+  const onsetSectionBIdx = text.search(/\bB\.\s*Trauma\b|\bB\.\s*Stress\b|\bSection\s*B\b/i);
+  const onsetWindowEnd = (onsetSectionBIdx > onsetIdx && onsetSectionBIdx !== -1) ? onsetSectionBIdx : onsetIdx + 250;
+  const onsetAfter = onsetIdx >= 0 ? text.substring(onsetIdx, onsetWindowEnd) : '';
   const onsetHasTimeframe = hasTimeframe(onsetAfter) &&
     /\b(20\d\d|19\d\d|\d+\s*(years?|months?)\s*ago|since\s*\d|in\s*\d{4}|during\s*(my\s*)?(deployment|service|active)|after\s*(service|deploy|discharge|getting out)|symptoms\s*(start|began|develop)|started\s*(around|in|after|during))\b/i.test(onsetAfter);
   const onsetIsOffTopic = /\b(when i get|around people|stay away|try to avoid|crowds|gun range|try going)\b/i.test(onsetAfter);
@@ -351,9 +399,9 @@ Update this with your own words and specifics — the doctor needs your real exp
       guidance: `This field needs three things: (1) an approximate year or timeframe for when symptoms first started; (2) a connection to your service - did they start during deployment, shortly after getting out, or gradually after separation; (3) what you first noticed - trouble sleeping, being on edge, withdrawing from people, nightmares, irritability, something changed. That combination gives the doctor a timeline and a starting point for the nexus.`,
       example: `Here is a draft format to follow - fill in your actual years and details:
 
-"My symptoms started around [year] - [during my deployment to ${firstLoc} / shortly after I separated from service / in the years following my time in the military]. At first I noticed [describe what you first noticed: I could not sleep, I was constantly on edge, I stopped wanting to be around people, I started having nightmares about things that happened, I had no patience and my anger was at a level that was not normal for me]. Over time it got worse. The symptoms have been [ongoing ever since / getting progressively worse / coming and going in waves but always there in the background]. It has been approximately [X] years since this started."
+"My symptoms started around [year] - [during my time in ${firstLoc} / shortly after I separated from service / in the years following my time in the military]. At first I noticed [describe what you first noticed: I could not sleep, I was constantly on edge, I stopped wanting to be around people, I started having nightmares, I had no patience and my anger was not normal for me].${ctx.mos ? " As " + article(ctx.mos) + " " + ctx.mos + ", the nature of that work — [describe what about your specific job or assignments was most stressful or left a mark on you] — is part of what I believe contributed to where I am today." : ""} Over time it got worse. The symptoms have been [ongoing ever since / getting progressively worse / coming and going in waves but always there]. It has been approximately [X] years since this started."
 
-If there was a specific event that triggered the start, mention it here. If symptoms built up gradually over time, say that. The doctor needs a clear picture of when this started and what it looked like in the beginning.`
+If there was a specific event that triggered the start, mention it here. If symptoms built up gradually over time, say that.${ctx.jobDescription ? " Your role as " + (ctx.mos || "a service member") + " is relevant — what that job required of you, what you were exposed to, and what you had to carry because of it." : ""} The doctor needs a clear picture of when this started and what it looked like in the beginning.`
     });
   } else {
     passed.push('Section A — Onset and Duration');
@@ -401,9 +449,9 @@ If there was a specific event that triggered the start, mention it here. If symp
       example: `${event1Note} Here is a draft structure — use your actual memory and words, not this exact wording:
 
 "Event 1: [Name the event in your own words — describe what happened, not a label]
-We were [stationed at / on patrol in / operating out of] [location]. It was [day/night/approximate time]. I was [describe what you were doing — your position, your job at that moment]. [Describe exactly what happened, step by step, in your own words]. I [describe what you did in the moment — ran over, took cover, froze, radioed for help]. I saw [describe what you physically saw — be specific]. In the moment I felt [describe: terrified, helpless, in shock, running on adrenaline]. For days after, I [describe how it stayed with you — could not stop thinking about it, had nightmares, could not sleep, stayed on edge]."
+We were [stationed at / on patrol in / operating out of] [location${ctx.locations.length > 0 ? " — e.g. " + ctx.locations[0] : ""}]. It was [day/night/approximate time]. I was [describe what you were doing — your position, your job at that moment${ctx.mos ? " as " + article(ctx.mos) + " " + ctx.mos : ""}]. [Describe exactly what happened, step by step, in your own words]. I [describe what you did in the moment]. I saw [describe what you physically saw — be specific]. In the moment I felt [describe: terrified, helpless, in shock, running on adrenaline]. For days after, I [describe how it stayed with you — could not stop thinking about it, had nightmares, could not sleep, stayed on edge]."
 
-If there was more than one event, write a separate paragraph for each one using the same structure. Do not combine them. Write in your own words — the doctor needs your actual account, not a template.`
+If there was more than one event, write a separate paragraph for each one using the same structure.${ctx.jobDescription ? "\n\nThink about your role as " + (ctx.mos || "a service member") + " — the situations that job put you in, the things you saw or had to handle as part of your duties. Those are the events the doctor needs to hear about." : ""} Write in your own words — the doctor needs your actual account, not a template.`
     });
   } else {
     passed.push('Section B — Trauma Description');
@@ -528,7 +576,7 @@ Do not leave this blank — even "None" is an acceptable answer.`
       example: `Here is a draft structure based on what you already listed (${locStr}) — fill in your actual experience in your own words:
 
 "Deployment 1 — [Location and approximate year]:
-I was deployed${ctx.mos ? ` as a ${ctx.mos} (${ctx.jobLabel || "MOS"})` : " in my assigned role"}. My day-to-day responsibilities included [describe what you actually did — your specific duties, what a typical shift or mission looked like, what you were responsible for as a ${ctx.mos || "service member"}]. The environment was [describe the conditions in your own words — the physical demands, the pace of operations, the level of stress or threat, what you were exposed to as part of that job]. The part of this deployment that affected me most was [describe in your own words — something specific you experienced, witnessed, or had to handle as part of your duties].${jobContextHint}
+I was deployed${ctx.mos ? ` as ${article(ctx.mos)} ${ctx.mos} (${ctx.jobLabel || "MOS"})` : " in my assigned role"}. My day-to-day responsibilities included [describe what you actually did — your specific duties, what a typical shift or mission looked like, what you were responsible for as ${ctx.mos ? article(ctx.mos) + " " + ctx.mos : "a service member"}]. The environment was [describe the conditions in your own words — the physical demands, the pace of operations, the level of stress or threat, what you were exposed to as part of that job]. The part of this deployment that affected me most was [describe in your own words — something specific you experienced, witnessed, or had to handle as part of your duties].${jobContextHint}
 
 Deployment 2 — [Location and approximate year]:
 [Use the same structure — your role, your duties, the conditions, and what specifically was most stressful or impactful for you.]"
@@ -1174,7 +1222,7 @@ function evaluateRFI(text: string, raw: string, gaps: QCGap[], passed: string[])
   const ctx = extractClientContext(text);
   const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
   const branchStr = ctx.branch || 'the military';
-  const mosStr = ctx.mos ? `as a ${ctx.mos}` : 'in their assigned role';
+  const mosStr = ctx.mos ? `as ${article(ctx.mos)} ${ctx.mos}` : 'in their assigned role';
   const rfiJobLabel = ctx.jobLabel || 'MOS';
   // If we have the Section III job description, use a snippet of it to ground examples
   const rfiJobHint = ctx.jobDescription
@@ -1196,7 +1244,7 @@ function evaluateRFI(text: string, raw: string, gaps: QCGap[], passed: string[])
       guidance: `Describe the MOS or job title, the branch of service, the type of unit, what typical daily duties involved physically and mentally, and the nature of deployments or assignments. The more specific and detailed, the better the doctor can connect the job to the conditions being claimed.`,
       example: `Here is a draft — fill in your actual experience:
 
-"I served in ${branchStr}${ctx.mos ? ` as a ${ctx.mos} (${rfiJobLabel})` : ' in my assigned role'}. My primary duties included [describe what your ${ctx.mos || 'role'} actually required you to do day to day — what a typical shift, mission, or workday looked like in your own words]. My unit deployed to [${locStr}] where [describe the operational environment in your own words — the conditions, the pace, what the physical and mental demands of that assignment were for someone in your specific job]. The physical demands included [describe what your body had to do consistently in this role]. The mental demands included [describe what was mentally taxing about your specific job or assignments]."${rfiJobHint}
+"I served in ${branchStr}${ctx.mos ? ` as ${article(ctx.mos)} ${ctx.mos} (${rfiJobLabel})` : ' in my assigned role'}. My primary duties included [describe what your ${ctx.mos || 'role'} actually required you to do day to day — what a typical shift, mission, or workday looked like in your own words]. My unit deployed to [${locStr}] where [describe the operational environment in your own words — the conditions, the pace, what the physical and mental demands of that assignment were for someone in your specific job]. The physical demands included [describe what your body had to do consistently in this role]. The mental demands included [describe what was mentally taxing about your specific job or assignments]."${rfiJobHint}
 
 Describe what your actual service looked like on a typical day. Do not copy these bracket prompts — replace each one with your own words. The doctor needs to understand your specific job, not a generic military description.`
     });
@@ -1499,7 +1547,15 @@ export function generateCombinedEmailDraft(
   const firstName = clientName.split(' ')[0];
 
   // Only include forms that actually failed
-  const failedForms = forms.filter(f => f.gaps.length > 0);
+  // Sort: RFI first, Mental Health second, then remaining forms in original order
+  const formOrder = ['RFI', 'Mental Health', 'MSK', 'GI', 'Headaches'];
+  const failedForms = forms
+    .filter(f => f.gaps.length > 0)
+    .sort((a, b) => {
+      const ai = formOrder.indexOf(a.formType);
+      const bi = formOrder.indexOf(b.formType);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
   const totalGaps = failedForms.reduce((sum, f) => sum + f.gaps.length, 0);
   const formNames = failedForms.map(f => f.formType).join(', ');
 
