@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useLocation } from "wouter";
 import Layout from "@/components/Layout";
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, FileText, Loader2, AlertCircle, CheckCircle2, User, Mail, X, Plus } from "lucide-react";
+import { Upload, FileText, Loader2, AlertCircle, CheckCircle2, User, Mail, X, Plus, RotateCcw } from "lucide-react";
 
 export default function Screener() {
   const [, navigate] = useLocation();
@@ -18,6 +18,27 @@ export default function Screener() {
   const [clientEmail, setClientEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<{ current: number; total: number; label: string } | null>(null);
+  // Track whether the page was loaded with stale URL params (old client session)
+  const [hasStaleParams, setHasStaleParams] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('client') || params.get('batch')) {
+      setHasStaleParams(true);
+    }
+  }, []);
+
+  const handleNewScreening = () => {
+    // Clear URL params, reset all state, and reload fresh
+    window.history.replaceState({}, '', '/');
+    setHasStaleParams(false);
+    setSelectedFiles([]);
+    setClientName('');
+    setClientEmail('');
+    setLoading(false);
+    setProgress(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   const addFiles = (incoming: FileList | File[]) => {
     const pdfs = Array.from(incoming).filter(f => f.type === "application/pdf");
@@ -104,9 +125,22 @@ export default function Screener() {
     <Layout>
       <div className="max-w-2xl mx-auto">
         {/* Page header */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold mb-1" style={{ color: "var(--color-navy)" }}>Screen a Client</h1>
-          <p className="text-muted-foreground text-sm">Drop one or more PandaDoc screening form PDFs. The QC engine evaluates every field and generates a coaching report and email draft for each form.</p>
+        <div className="mb-8 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold mb-1" style={{ color: "var(--color-navy)" }}>Screen a Client</h1>
+            <p className="text-muted-foreground text-sm">Drop one or more PandaDoc screening form PDFs. The QC engine evaluates every field and generates a coaching report and email draft for each form.</p>
+          </div>
+          {hasStaleParams && (
+            <button
+              type="button"
+              onClick={handleNewScreening}
+              className="flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border border-border bg-white hover:bg-muted transition-colors shrink-0 mt-0.5"
+              style={{ color: "var(--color-navy)" }}
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              New Screening
+            </button>
+          )}
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
