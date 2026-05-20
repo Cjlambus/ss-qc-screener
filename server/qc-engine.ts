@@ -156,8 +156,14 @@ export function evaluateForm(text: string, formType: string): QCResult {
 function extractClientContext(text: string) {
   const branch = /\b(usmc|marine corps|marines?|army|navy|air force|coast guard|national guard|reserves?)\b/i.exec(text)?.[0]?.toUpperCase() || 'the military';
   const mos = (() => {
-    const m = /MOS[^:\n]{0,20}:\s*([^\n]{5,60})/i.exec(text);
-    return m ? m[1].trim() : null;
+    // Only match if the value after the colon looks like a real answer (alphanumeric, not a prompt)
+    // Reject if it starts with a bracket [ or parenthesis ( which means it is still a placeholder
+    const m = /MOS[^:\n]{0,20}:\s*([A-Za-z0-9][^\n]{3,55})/i.exec(text);
+    if (!m) return null;
+    const val = m[1].trim();
+    // Reject if it looks like a form label or instruction rather than a client answer
+    if (/^\[|^\(|please|describe|enter|list|if any|your mos|e\.g\./i.test(val)) return null;
+    return val;
   })();
 
   // Location detection: only scan lines that look like client-typed answers.
@@ -706,7 +712,7 @@ function evaluateMSK(text: string, raw: string, gaps: QCGap[], passed: string[])
       guidance: `Go beyond just the year. State: (1) approximately when it started; (2) where you were or what you were doing at the time - deployed, in training, back stateside, doing a specific physical task; (3) the activity or incident that triggered it - a specific lift, a fall, carrying heavy gear, a vehicle blast, repetitive physical stress over time. These three elements together are what let the doctor write the nexus to your service.`,
       example: `Here is a draft format to follow:
 
-"This condition started around [year]. At the time I was [on active duty / recently separated / deployed to (location) / stationed at (base)]. The pain began [suddenly after a specific incident / gradually over time from repeated physical stress]. I first noticed it when [describe the situation: I fell from a vehicle during a training exercise, I was carrying a heavy ruck on a long patrol, I was loading equipment and felt something give way, I experienced an IED blast that jolted my spine, I was in combatives training and took repeated impacts to this area]. Before that this was not a problem. Since then the condition has [stayed the same / gotten progressively worse / spread to other areas]."
+"This condition started around [year]. At the time I was [on active duty / recently separated / deployed to (location) / stationed at (base)]. The pain began [suddenly after a specific incident / gradually over time from repeated physical stress]. I first noticed it when [describe in your own words what was happening — what activity, situation, or incident first caused or revealed this condition]. Before that this was not a problem. Since then the condition has [stayed the same / gotten progressively worse / spread to other areas]."
 
 Be specific about the activity or incident. That is the bridge between your service and your condition.`
     });
@@ -923,7 +929,7 @@ function evaluateHeadaches(text: string, raw: string, gaps: QCGap[], passed: str
       guidance: `Go beyond just the year. State: (1) approximately when headaches first started; (2) where you were or what you were doing at the time - deployed, in training, back home; (3) what was happening when they first started - a blast, a fall, a head injury, a specific period of extreme stress, or a training accident. These three elements let the doctor write the nexus.`,
       example: `Here is a draft:
 
-"My headaches started around [year]. At the time I was [on active duty / recently separated / deployed to ${locStr} / in training at (location)]. They began [suddenly after a specific incident / gradually over a period of time]. I first noticed them [describe the situation: after an IED blast nearby rattled my head and spine, after a vehicle rollover, after a fall during training, after a period of extreme operational stress with little sleep, following a head injury during combatives]. Before that I rarely had headaches. They have [continued / gotten progressively worse] since then."
+"My headaches started around [year]. At the time I was [on active duty / recently separated / deployed to ${locStr} / in training at (location)]. They began [suddenly after a specific incident / gradually over a period of time]. I first noticed them [describe in your own words what was happening when headaches first started — what you were doing, where you were, what occurred]. Before that I rarely had headaches. They have [continued / gotten progressively worse] since then."
 
 If there was a specific incident - a blast, a fall, a vehicle accident - mention it clearly here. That is what gives the doctor the connection to your service.`
     });
@@ -971,7 +977,7 @@ If it was after a specific injury, make sure to describe the event in Question 3
         guidance: `Describe where on the body the injury occurred (head, neck, face), what caused it (blast wave, struck head on vehicle interior, fell and hit ground), and what happened physically at the moment of injury. Include whether you lost consciousness, experienced confusion, ringing in the ears, or were evaluated by a medic.`,
         example: `Here is a draft:
 
-"The injury occurred during [describe the situation — a vehicle rollover, an IED blast, a training fall, hand-to-hand combat]. I [hit my head on / was thrown against / experienced the blast wave through] [the vehicle interior / the ground / the surrounding structure]. The point of contact was [my forehead / the back of my head / my jaw / the top of my skull]. Immediately after I experienced [ringing in my ears / confusion / brief loss of consciousness / severe headache / blurred vision / nausea]. I [was / was not] evaluated by a medic at the time. My headaches began [immediately / within days / within weeks] of this incident."`
+"The injury occurred during [describe the situation in your own words — what happened, where you were, what you were doing]. I [describe the physical impact — what happened to your head or body in that moment]. Immediately after I experienced [describe what you felt: ringing in your ears, confusion, loss of consciousness, severe headache, blurred vision, nausea, or other symptoms]. I [was / was not] evaluated by a medic at the time. My headaches began [immediately / within days / within weeks] of this incident."`
       });
     } else passed.push('Q3 — Injury Location and Detail');
   }
@@ -1215,10 +1221,10 @@ Describe what your actual service looked like on a typical day. Do not copy thes
       field: 'Condition Onset and History',
       issue: v_note,
       severity: 'critical',
-      guidance: `For each condition, go beyond the year. State: (1) where you were or what you were doing when it started — deployed to ${locStr}, stationed at a specific base, in training, back stateside; (2) the specific activity, incident, or pattern that triggered it — a fall, carrying heavy gear, an IED blast, chronic stress, sleep deprivation; and (3) how the condition has progressed since it started. A year alone gives the doctor a when but not a why. The why is what connects it to your service.`,
+      guidance: `For each condition, go beyond the year. State: (1) where you were or what you were doing when it started — deployed, in training, back stateside, at a specific base; (2) the specific activity, incident, or pattern that first caused or revealed the condition — describe it in your own words; and (3) how the condition has progressed since it started. A year alone gives the doctor a when but not a why. The why is what connects it to your service.`,
       example: `Here is a draft template to use for each condition:
 
-"[Condition name]: This condition started around [year]. At the time I was [on active duty / recently separated / deployed to ${locStr} / stationed at (base)]. It began [suddenly after a specific incident / gradually over time]. I first noticed it when [describe the situation: I fell from a vehicle during a training exercise, I was carrying heavy gear on a 12-mile ruck, I experienced an IED blast that jolted my entire body, I sustained repeated impacts during combatives training, I was under constant high-stress operations with no recovery time]. Before that this was not an issue. Since then the condition has [stayed the same / gotten progressively worse / spread to include (area or symptom)]. It currently affects my ability to [describe functional impact]."
+"[Condition name]: This condition started around [year]. At the time I was [on active duty / recently separated / deployed to ${locStr} / stationed at (base)]. It began [suddenly after a specific incident / gradually over time]. I first noticed it when [describe in your own words what was happening — the specific activity, situation, or incident that first caused or revealed this condition]. Before that this was not an issue. Since then the condition has [stayed the same / gotten progressively worse / spread to include (area or symptom)]. It currently affects my ability to [describe functional impact]."
 
 Complete this for every condition listed. Each one needs its own story — not just a year.`
     });
@@ -1341,7 +1347,7 @@ Complete this for every condition listed. Each one needs its own story — not j
       guidance: `Describe the mental health condition being claimed, at least one specific traumatic or high-stress event from service that contributed to it, and how the condition currently affects the client’s daily life. Cover at least: sleep and nightmares, ability to work and concentrate, relationships and social life, and any avoidance behaviors.`,
       example: `Here is a draft:
 
-"I have been dealing with [PTSD / anxiety / depression / a combination of these] since [approximate timeframe — my time in ${locStr} / shortly after I separated / while I was still on active duty]. During my service I experienced [describe a specific event or pattern — repeated exposure to IED blasts and casualties, witnessing the death of fellow service members, combat engagements where I was under direct fire, the constant threat of attacks during convoys through hostile areas]. These events continue to affect me today.
+"I have been dealing with [PTSD / anxiety / depression / a combination of these] since [approximate timeframe — my time in ${locStr} / shortly after I separated / while I was still on active duty]. During my service I experienced [describe in your own words the specific events or patterns from your service that contributed to your mental health — what happened, when, and where]. These events continue to affect me today.
 
 Currently my symptoms include [nightmares about specific events, difficulty sleeping, hypervigilance in public spaces, avoiding crowds and loud sounds, irritability and anger that affects my relationships, difficulty concentrating at work, isolating from friends and family]. I [am currently in therapy / have not sought treatment / have tried medication]. My mental health condition directly affects my ability to [work consistently, maintain relationships, leave the house comfortably, feel safe in normal daily environments]."
 
