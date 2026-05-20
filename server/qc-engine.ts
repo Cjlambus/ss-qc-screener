@@ -69,10 +69,15 @@ export interface ClientProfile {
 export interface QCGap {
   section: string;
   field: string;
-  issue: string;
+  // ── Five-part output (matches client-facing format) ──────────────────────
+  issue: string;            // Internal: short QC flag for CS review
+  whatWasWritten: string;   // Quote or summary of what the veteran actually wrote
+  whatsMissing: string;     // What additional detail would help the doctor
+  whatToAdd: string;        // The type of real-life details to consider adding
+  example: string;          // Copy/paste-ready draft in veteran's voice
+  helpfulContext: string;   // Educational context — never directive
   severity: "critical" | "moderate";
-  guidance: string;
-  example?: string;  // Drafted first-person example the client can copy and adapt
+  guidance: string;         // Legacy field — kept for CS Slack posts
 }
 
 export interface QCResult {
@@ -84,6 +89,88 @@ export interface QCResult {
 }
 
 // ─── Utilities ─────────────────────────────────────────────────────────────────
+
+// ── Banned word scrubber ────────────────────────────────────────────────────
+// Strips clinical/legal/AI language and replaces with veteran-voice alternatives.
+// Applied to every client-facing string before it leaves the engine.
+const BANNED_REPLACEMENTS: [RegExp, string][] = [
+  [/\bhypervigilance\b/gi, 'constantly being on edge'],
+  [/\bhypervigilant\b/gi, 'always on edge'],
+  [/\boccupational impairment\b/gi, 'hard time keeping a job'],
+  [/\boccupational functioning\b/gi, 'ability to work'],
+  [/\bpersistent depressive symptoms\b/gi, 'feeling depressed that does not go away'],
+  [/\bdiminished social functioning\b/gi, 'hard time being around people'],
+  [/\bsymptom manifestation\b/gi, 'how these symptoms show up'],
+  [/\btrauma response\b/gi, 'reaction to what happened'],
+  [/\bmedically linked\b/gi, 'connected'],
+  [/\bnexus\b/gi, 'connection'],
+  [/\bservice connection rationale\b/gi, 'reason this connects to service'],
+  [/\bclaim strategy\b/gi, 'plan'],
+  [/\bcompensable\b/gi, 'ratable'],
+  [/\bstrengthens your case\b/gi, 'gives the doctor a clearer picture'],
+  [/\bsupports a rating\b/gi, 'helps explain your experience'],
+  [/\bhelps get approved\b/gi, 'gives the doctor more context'],
+  [/\bsupports service connection\b/gi, 'helps explain what happened in service'],
+  [/\bneeded for nexus\b/gi, 'helps provide a clearer picture'],
+  [/\bneeded to support your claim\b/gi, 'helps provide a clearer picture'],
+  [/\bneeded to strengthen your case\b/gi, 'helps provide a clearer picture'],
+  [/\bto support your claim\b/gi, 'to give the doctor a clearer picture'],
+  [/\bfor your claim\b/gi, 'for the doctor'],
+  [/\byour claim\b/gi, 'your file'],
+  [/\bDBQ\b/g, 'medical form'],
+  [/\bIMO\b/g, 'medical opinion'],
+  [/\bclinically significant\b/gi, 'in the serious range'],
+  [/\bsymptomatology\b/gi, 'symptoms'],
+  [/\bpresenting symptoms\b/gi, 'symptoms you are dealing with'],
+  [/\bpresenting with\b/gi, 'showing'],
+  [/\bexhibiting\b/gi, 'showing'],
+  [/\bmanifesting\b/gi, 'showing up as'],
+  [/\bpervasive\b/gi, 'constant'],
+  [/\baggravated\b/gi, 'made worse'],
+  [/\baggravation\b/gi, 'getting worse'],
+  [/\bpathology\b/gi, 'condition'],
+  [/\bpathological\b/gi, 'serious'],
+  [/\bdiagnosed with\b/gi, 'dealing with'],
+  [/\bdiagnosis\b/gi, 'condition'],
+];
+
+function scrubClinical(text: string): string {
+  let out = text;
+  for (const [pattern, replacement] of BANNED_REPLACEMENTS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
+// Build a complete QCGap object — enforces all five required fields.
+// Pass empty string for optional fields rather than undefined.
+function makeGap(
+  section: string,
+  field: string,
+  opts: {
+    issue: string;
+    whatWasWritten: string;
+    whatsMissing: string;
+    whatToAdd: string;
+    example: string;
+    helpfulContext: string;
+    severity?: 'critical' | 'moderate';
+    guidance?: string;
+  }
+): QCGap {
+  return {
+    section,
+    field,
+    issue: opts.issue,
+    whatWasWritten: scrubClinical(opts.whatWasWritten),
+    whatsMissing: scrubClinical(opts.whatsMissing),
+    whatToAdd: scrubClinical(opts.whatToAdd),
+    example: scrubClinical(opts.example),
+    helpfulContext: scrubClinical(opts.helpfulContext),
+    severity: opts.severity ?? 'moderate',
+    guidance: opts.guidance ?? opts.whatsMissing,
+  };
+}
 
 // Return 'an' before vowel sounds, 'a' otherwise
 function article(word: string): string {
@@ -596,7 +683,7 @@ export function buildClientProfile(allTexts: { formType: string; text: string }[
 
 // Main evaluator
 export function evaluateForm(text: string, formType: string, allTexts?: { formType: string; text: string }[]): QCResult {
-  const gaps: QCGap[] = [];
+  const gaps: any[] = [];
   const passedFields: string[] = [];
   const raw = text.toLowerCase();
   const answerBlocks = getAnswerBlocks(text);
@@ -615,12 +702,26 @@ export function evaluateForm(text: string, formType: string, allTexts?: { formTy
     gaps.push({ section: 'Document', field: 'Form Type', issue: 'Could not identify the form type.', severity: 'critical', guidance: 'Please verify this is one of the five Semper Solutus screening forms: RFI, MSK, GI, Headaches, or Mental Health.' });
   }
 
-  const status = gaps.length === 0 ? 'pass' : 'fail';
+  // ── Normalize gaps: fill any missing five-part fields + scrub clinical language ──
+  // This runs as a safety net so any gap not yet converted to makeGap() still
+  // renders correctly in the new five-section format.
+  const normalizedGaps: QCGap[] = gaps.map(g => ({
+    ...g,
+    whatWasWritten: scrubClinical(g.whatWasWritten || 'This section was left blank.'),
+    whatsMissing:   scrubClinical(g.whatsMissing   || g.issue || g.guidance || ''),
+    whatToAdd:      scrubClinical(g.whatToAdd      || g.guidance || ''),
+    example:        scrubClinical(g.example        || ''),
+    helpfulContext: scrubClinical(g.helpfulContext || 'Only include what is true for you. The goal is simply to help the doctor better understand what day-to-day life has actually looked like.'),
+    guidance:       scrubClinical(g.guidance       || ''),
+    issue:          scrubClinical(g.issue          || ''),
+  }));
+
+  const status = normalizedGaps.length === 0 ? 'pass' : 'fail';
   const summary = status === 'pass'
     ? 'All fields meet the required detail standard. This form is ready for review.'
-    : `${gaps.length} gap${gaps.length === 1 ? '' : 's'} found across ${new Set(gaps.map(g => g.section)).size} section${new Set(gaps.map(g => g.section)).size === 1 ? '' : 's'}. Client coaching recommended.`;
+    : `${normalizedGaps.length} gap${normalizedGaps.length === 1 ? '' : 's'} found across ${new Set(normalizedGaps.map(g => g.section)).size} section${new Set(normalizedGaps.map(g => g.section)).size === 1 ? '' : 's'}. Client coaching recommended.`;
 
-  return { formType, status, gaps, passedFields, summary };
+  return { formType, status, gaps: normalizedGaps, passedFields, summary };
 }
 
 // ─── MENTAL HEALTH ─────────────────────────────────────────────────────────────
@@ -820,6 +921,14 @@ function evaluateMentalHealth(
       field: 'Current Symptoms Description',
       issue: `You wrote ${whatTheyWrote} — the doctor needs to know what that actually looks like on a regular day, not just the name of it. How often? How bad? What can you not do because of it?`,
       severity: 'critical',
+      whatWasWritten: profile.namedSymptoms.length > 0
+        ? `You listed: ${profile.namedSymptoms.join(', ')}.`
+        : symptomsAnswer && !symptomsAnswer.includes('\u2610') && !symptomsAnswer.includes('Yes') && !symptomsAnswer.includes('No')
+        ? `"${symptomsAnswer.trim()}"`
+        : 'This field was left blank.',
+      whatsMissing: `The name of a symptom tells the doctor what it is called. What the doctor actually needs is what it feels like for you — how often it happens, how bad it gets, and what it stops you from doing.`,
+      whatToAdd: `For each symptom you listed, think about: How often does it happen (every day, a few times a week, constantly)? How bad does it get on a scale of 1 to 10? What can you not do because of it (work, sleep, be around family, leave the house)? What does a bad day actually look like?`,
+      helpfulContext: `The more specific you are about each symptom, the better the doctor understands what you are actually dealing with on a daily basis. You do not need medical words — just describe it in plain language like you are telling a friend what a rough day looks like.`,
       guidance: `Describe each symptom like you are explaining it to someone who has never dealt with it. How often does it happen? How bad does it get? What does it stop you from doing?`,
       example: (() => {
         // Build a rich, personalized example anchored to everything we know about this client
@@ -915,6 +1024,18 @@ function evaluateMentalHealth(
       field: 'Onset and Duration of Symptoms',
       issue: onsetNote,
       severity: 'critical',
+      whatWasWritten: onsetWritten && wordCount(onsetWritten) > 1
+        ? `"${onsetWritten.trim()}"`
+        : onsetAnchor
+        ? `You wrote: "${onsetAnchor}" — a start, but the doctor needs more context around it.`
+        : 'This field was left blank.',
+      whatsMissing: onsetIsOffTopic
+        ? `This answer describes what triggers distress today, but the question is asking when symptoms first began. The doctor needs a timeframe and the story of how it started.`
+        : !onsetHasTimeframe
+        ? `No timeframe was given. The doctor needs to know roughly when things started — a year is fine, does not need to be exact.`
+        : `There is a year here but the doctor also needs to understand how it connects to your service and what you first noticed was different.`,
+      whatToAdd: `Think about three things: (1) roughly when it started, (2) how that connects to your time in the military or right after getting out, and (3) what you first noticed was off — sleep, mood, temper, pulling away from people, something changed. Write it like you are explaining it to someone who does not know your history.`,
+      helpfulContext: `The doctor needs a timeline to understand how long you have been dealing with this and where it started. You do not need to write an essay — even a few sentences that cover when it began and what the first signs were gives them a much clearer picture.`,
       guidance: `Three things needed here: roughly when it started, how it connects to your time in the service, and what you first noticed was different. Just say it in your own words.`,
       example: (() => {
         const parts: string[] = [];
@@ -1030,6 +1151,18 @@ function evaluateMentalHealth(
       field: 'Traumatic Event Description',
       issue: issueText,
       severity: 'critical',
+      whatWasWritten: traumaIsBlank
+        ? 'This section was left blank.'
+        : `"${traumaAnswers.trim()}"`,
+      whatsMissing: traumaIsBlank && highScoresNoTrauma
+        ? `Your scores are in the severe range, but this section is blank. The doctor is going to look at those numbers and need to understand what drove them. This is the section where you explain that.`
+        : traumaIsBlank
+        ? `This section is blank. The doctor needs to understand what you experienced during or connected to your service — whether that is a specific event or the kind of ongoing pressure your job put you under.`
+        : `What is here is a start, but the doctor needs more of the story — where it happened, what specifically occurred, and how it affected you after.`,
+      whatToAdd: traumaIsBlank
+        ? `You have two options here. Option 1: If something specific happened, write it out — where you were, what happened, and how it stayed with you after. Option 2: If it was more of a slow buildup — the pace of the job, the pressure, what you saw or dealt with day after day over your whole service — describe that. Walk through what that environment was actually like.`
+        : `Walk through it like you are telling the story to someone who was not there. Where were you, what were you doing, what happened, and what did it do to you afterward? One sentence per step is enough — you do not need to write a novel.`,
+      helpfulContext: `This section is not about blame or proving anything — it is simply giving the doctor context so they understand what you went through. Both specific events and accumulated stress from a high-pressure job are recognized as valid experiences. Only include what is true for you.`,
       guidance: traumaIsBlank
         ? `Two paths: (1) If a specific thing happened, write it out like you are telling the story — where, what, how it hit you after. (2) If it was more of a slow grind — the job, the pace, the pressure, what you were exposed to day after day — describe that instead. Both are legitimate.`
         : `Write out what happened like you are telling someone the story. Where were you, what were you doing, what happened, and how did it hit you after? Your own words.`,
@@ -1101,6 +1234,12 @@ function evaluateMentalHealth(
       field: 'Trigger Response Description',
       issue: triggerNote,
       severity: 'moderate',
+      whatWasWritten: triggerWritten
+        ? `"${triggerWritten.trim()}"`
+        : 'This section was left blank.',
+      whatsMissing: `The doctor needs to understand not just what triggers you, but what actually happens when you hit one. What does your body do? What does your mind do? How long does it take to feel normal again?`,
+      whatToAdd: `Think about what happens physically when you get triggered — does your heart race, do you sweat, do you feel like you need to get out immediately? What do you do — leave the situation, go quiet, get angry? How long does it take to calm down? Those details help the doctor understand the severity of what you are dealing with.`,
+      helpfulContext: `Only describe what is true for you. There is no right or wrong reaction — the goal is just helping the doctor understand what you actually go through when something sets you off.`,
       guidance: `The doctor needs to know what actually happens to you when you hit a trigger — not just what the trigger is. Describe your physical reaction (heart pounding, sweating, shaking, chest tightening), your emotional reaction (rage, panic, dread, shutting down), and what you do (leave the area, isolate, stay on high alert for hours). Also note how long it takes to calm down.`,
       example: `Here is a draft — replace with your own experience:
 
@@ -1126,6 +1265,10 @@ Update this with what you actually experience — the more specific you are, the
       field: 'Prior / Current Psychiatric Diagnoses',
       issue: 'This field was left blank. The doctor needs to know whether you have ever received a formal mental health diagnosis — from the VA, a civilian provider, or even an informal screening.',
       severity: 'critical',
+      whatWasWritten: 'This field was left blank.',
+      whatsMissing: `The doctor needs to know if you have ever been formally told by a doctor or provider that you have PTSD, depression, anxiety, or any other mental health condition. If not, they need to know that too.`,
+      whatToAdd: `Either write down any mental health condition you have been diagnosed with and who diagnosed you, or clearly state that you have never received a formal diagnosis. Either answer is fine — a blank field is the only problem.`,
+      helpfulContext: `This does not change anything about your situation — it just gives the doctor a complete picture of your mental health history so they can do their job properly. If you are not sure if something counts as a formal diagnosis, include it anyway and let the doctor sort it out.`,
       guidance: `If you have been diagnosed with PTSD, depression, anxiety, or any other mental health condition, list each one here along with who diagnosed you (VA, private doctor, etc.). If you have never received a formal diagnosis, that is okay — write that clearly so the doctor knows you are filing based on symptoms.`,
       example: `Choose whichever applies to you:
 
@@ -1151,6 +1294,10 @@ Either way, do not leave this blank — the doctor needs something in this field
       field: 'Psychiatric Medications',
       issue: 'This field was left blank. The doctor needs to know about any medications specifically prescribed for your mental health — past or current — separate from your general medications.',
       severity: 'critical',
+      whatWasWritten: 'This field was left blank.',
+      whatsMissing: `The doctor needs to know if you have been prescribed anything specifically for your mental health — antidepressants, sleep medication for nightmares, anxiety medication, anything like that. This is separate from other prescriptions.`,
+      whatToAdd: `List any mental health medications you are currently taking or have taken in the past. If you have never been on any, just write that clearly. You do not need to list start dates or grades of effectiveness — just the name and what it was for is enough.`,
+      helpfulContext: `This helps the doctor understand what treatment you have or have not received for your mental health. It is not about judgment — whether you have been on medication or not, both answers give the doctor useful context.`,
       guidance: `List any medications prescribed for mental health conditions — things like antidepressants, sleep aids for PTSD nightmares, anxiety medication, or mood stabilizers. This is a separate list from your blood pressure or diabetes medications. If you have never been prescribed anything for mental health, write that clearly.`,
       example: `Choose whichever applies to you:
 
@@ -1192,6 +1339,12 @@ Do not leave this blank — even "None" is an acceptable answer.`
       field: 'Combat / Deployment Details',
       issue: `What was written — ${deployWritten} — only lists locations and the word "combat tours." The doctor needs to know what you actually experienced during those deployments: your role, what you were exposed to, and what the most stressful or dangerous situations were.`,
       severity: 'critical',
+      whatWasWritten: deploymentAnswer
+        ? `"${deploymentAnswer.trim().substring(0, 200)}${deploymentAnswer.length > 200 ? '...' : ''}"`
+        : 'This section was left blank.',
+      whatsMissing: `The doctor needs to understand what you were actually doing during your service — not just where you were. What was your job? What did a typical day look like? What was the hardest or most stressful part? That context is what gives the doctor a real picture of what you were exposed to.`,
+      whatToAdd: `For each deployment or period of service, try to describe: what your role was and what you were responsible for, what a normal day looked like, and what was most stressful or difficult about that time. You do not need to relive anything — just enough to give the doctor context around what your service actually involved.`,
+      helpfulContext: `The doctor is trying to understand your service history in a way that puts your symptoms in context. The more you can paint a picture of what your day-to-day looked like — the pace, the pressure, what you were responsible for — the better they can connect the dots.`,
       guidance: `For each deployment, say what your job was, what a normal day looked like, and what was hardest or most stressful about that time. Real and specific beats long and vague.`,
       example: (() => {
         const parts: string[] = [];
@@ -1282,6 +1435,14 @@ If you feel like you do not have much support, say that — it is important info
       field: 'Daily Life Impact',
       issue: `What was written — ${funcWritten} — covers only ${funcCount} life area${funcCount === 1 ? '' : 's'} and is too brief. The doctor needs a complete picture of how symptoms affect every major part of your life. Missing: ${missingDescriptions}.`,
       severity: 'critical',
+      whatWasWritten: funcAnswer
+        ? `"${funcAnswer.trim().substring(0, 300)}${funcAnswer.length > 300 ? '...' : ''}"`
+        : 'This section was left blank.',
+      whatsMissing: funcMissing.length > 0
+        ? `The doctor needs to see how your symptoms affect every major part of your life. What is missing here: ${funcMissing.map(k => ({ work: 'how it affects work', sleep: 'how it affects sleep', relationships: 'how it affects your relationships', daily: 'how it affects your daily routine' }[k])).join(', ')}.`
+        : `What is written is too brief. The doctor needs enough detail to understand what day-to-day life actually looks like for you right now.`,
+      whatToAdd: `Think about each area of your life and say what has changed. Work — are you working, and if not why not, or if yes what has gotten harder? Sleep — how many hours, do you wake up, what do mornings feel like? Relationships — what has changed with family or friends? Daily life — what do you avoid now that used to be normal? Short and honest is exactly what the doctor needs.`,
+      helpfulContext: `The doctor uses this section to understand how your symptoms actually show up in real life. Numbers and labels only go so far — this is where you paint the picture of what your days look like right now. Only write what is actually true for you.`,
       guidance: `Go area by area and say what is actually different now. Work, sleep, relationships, daily stuff. Short and real beats long and vague.`,
       example: (() => {
         const parts: string[] = [];
@@ -1435,7 +1596,7 @@ Do not worry about making it sound perfect. Write it the way you would tell it t
 
 // ─── MSK ──────────────────────────────────────────────────────────────────────
 
-function evaluateMSK(text: string, raw: string, gaps: QCGap[], passed: string[], profile: ClientProfile) {
+function evaluateMSK(text: string, raw: string, gaps: any[], passed: string[], profile: ClientProfile) {
   const locStr = profile.locations.length > 0 ? profile.locations.join(', ') : 'overseas';
 
   // Scope all checks to Section IV onward to avoid false-passes from Section I service dates/locations
@@ -1546,7 +1707,7 @@ Progression tells the doctor this is not a one-time injury - it is an ongoing co
 
 // ─── GI ───────────────────────────────────────────────────────────────────────
 
-function evaluateGI(text: string, raw: string, gaps: QCGap[], passed: string[], profile: ClientProfile) {
+function evaluateGI(text: string, raw: string, gaps: any[], passed: string[], profile: ClientProfile) {
 
   // GI form is primarily checkboxes. In the PDF extraction all checkboxes render as ☐
   // regardless of whether they were checked. We therefore detect client answers by:
@@ -1658,7 +1819,7 @@ Severe: "I would rate my GI condition as Severe. On bad days I am unable to leav
 
 // ─── HEADACHES ────────────────────────────────────────────────────────────────
 
-function evaluateHeadaches(text: string, raw: string, gaps: QCGap[], passed: string[], profile: ClientProfile) {
+function evaluateHeadaches(text: string, raw: string, gaps: any[], passed: string[], profile: ClientProfile) {
   const locStr = profile.locations.length > 0 ? profile.locations.join(', ') : 'overseas';
 
   // -- Q1: Timeframe / when headaches began --
@@ -1879,7 +2040,7 @@ If headaches affect your sleep — waking you up at night, preventing rest — i
 
 // ─── RFI ──────────────────────────────────────────────────────────────────────
 
-function evaluateRFI(text: string, raw: string, gaps: QCGap[], passed: string[], profile: ClientProfile) {
+function evaluateRFI(text: string, raw: string, gaps: any[], passed: string[], profile: ClientProfile) {
   const locStr = profile.locations.length > 0 ? profile.locations.join(', ') : 'overseas';
   const branchStr = profile.branch || 'the military';
   const mosStr = profile.mos ? `as ${article(profile.mos)} ${profile.mos}` : 'in their assigned role';

@@ -12,55 +12,82 @@ interface QCGap {
   field: string;
   issue: string;
   severity: string;
-  guidance?: string;
+  whatWasWritten?: string;
+  whatsMissing?: string;
+  whatToAdd?: string;
   example?: string;
+  helpfulContext?: string;
+  guidance?: string;
 }
 
-// Build combined email entirely from gap data already in the reviews list.
-// No server round-trip needed — works even if the DB was wiped on redeploy.
+// Build combined email in the new five-section format.
+// Follows the exact Semper Solutus Screening Form Enhancer spec.
 function buildCombinedEmail(clientName: string, failedForms: { formType: string; gaps: QCGap[] }[]) {
   const firstName = clientName.split(" ")[0];
-  const totalGaps = failedForms.reduce((sum, f) => sum + f.gaps.length, 0);
 
   const subject =
     failedForms.length === 1
-      ? `Your ${failedForms[0].formType} Form — Updates Needed Before We Move Forward`
+      ? `Your ${failedForms[0].formType} Form — A Few Sections Need More Detail`
       : `Your Screening Forms — A Few Sections Need More Detail`;
 
+  // ── Intro template (verbatim per spec) ──
   let body =
     `Hey ${firstName},\n\n` +
-    `Thank you for getting your screening forms submitted. We went through them carefully and you are making great progress. ` +
-    `Before we can move this forward to your medical review, we need you to go back and add more detail to a few sections. ` +
-    `Your team will be sending each form back to you so you can update and resubmit.\n\n` +
-    `For each section below, we have included a draft of what you can write. These are starting points — update them with your actual experience and words. ` +
-    `The doctor needs your story, not a template.\n\n` +
-    `Here is exactly what needs to be updated:\n\n`;
+    `Thank you for getting your screening forms completed and submitted. We reviewed everything and you are making great progress.\n\n` +
+    `Before we move your case to medical review, there are a few sections that need additional detail so the doctor has a clearer understanding of your symptoms, timeline, military experiences, and how these conditions affect your day-to-day life.\n\n` +
+    `Below, we outlined the sections that need more detail and included example wording to help better explain the level of detail being requested. These are simply examples based on the information you already provided and your military history. Please review them and update anything so it reflects your actual experience and your own words.\n\n` +
+    `The goal is not to make things sound perfect — it is simply to help the doctor better understand what life has actually looked like for you.\n\n` +
+    `Once updated, please resubmit the forms and we will review them right away and move you to the next step.\n\n` +
+    `We've got you.\n\nThe Semper Solutus Team\n\n`;
 
-  let itemNumber = 1;
+  // ── Body: one section per form, gaps in five-part format ──
+  const FORM_LABEL: Record<string, string> = {
+    'RFI': 'RFI FORM',
+    'Mental Health': 'MENTAL HEALTH FORM',
+    'Headaches': 'HEADACHES FORM',
+    'MSK': 'MSK FORM',
+    'GI': 'GI FORM',
+  };
 
   for (const form of failedForms) {
-    body += `${"=".repeat(48)}\n`;
-    body += `${form.formType.toUpperCase()} FORM\n`;
-    body += `${"=".repeat(48)}\n\n`;
+    const label = FORM_LABEL[form.formType] ?? `${form.formType.toUpperCase()} FORM`;
+    body += `${'='.repeat(52)}\n`;
+    body += `${label}\n`;
+    body += `${'='.repeat(52)}\n\n`;
 
     for (const gap of form.gaps) {
-      body += `${itemNumber}. ${gap.section} — ${gap.field}\n\n`;
-      body += `${gap.issue}\n\n`;
-      if (gap.guidance) {
-        body += `What to add: ${gap.guidance}\n\n`;
+      // Section header
+      body += `### ${gap.section}\n\n`;
+
+      // 1. What was written
+      if (gap.whatWasWritten) {
+        body += `What was written\n${gap.whatWasWritten}\n\n`;
       }
+
+      // 2. What is missing
+      const missing = gap.whatsMissing || gap.issue || '';
+      if (missing) {
+        body += `What's missing\n${missing}\n\n`;
+      }
+
+      // 3. What to add
+      const toAdd = gap.whatToAdd || gap.guidance || '';
+      if (toAdd) {
+        body += `What to add\n${toAdd}\n\n`;
+      }
+
+      // 4. Here is a draft
       if (gap.example) {
-        body += `"${gap.example}"\n\n`;
+        body += `Here is a draft\n${gap.example}\n\n`;
       }
-      body += `${"—".repeat(42)}\n\n`;
-      itemNumber++;
+
+      // 5. Helpful Context
+      const ctx = gap.helpfulContext || 'Only include what is true for you. The goal is simply to help the doctor better understand what day-to-day life has actually looked like for you.';
+      body += `Helpful Context\n${ctx}\n\n`;
+
+      body += `${'\u2500'.repeat(48)}\n\n`;
     }
   }
-
-  body +=
-    `Once you have updated ${totalGaps === 1 ? "this section" : "these sections"} and resubmitted the forms, ` +
-    `we will review them right away and move you on to the next step.\n\n` +
-    `We have got you.\n\nThe Semper Solutus Team`;
 
   return { subject, body };
 }
