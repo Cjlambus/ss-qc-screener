@@ -317,9 +317,14 @@ If there was a specific event that triggered the start, mention it here. If symp
   const traumaHasDetail = traumaWords >= 30;
 
   // Identify which specific events they mentioned so we can tailor the example
+  // IMPORTANT: these flags are used only to personalize phrasing where the client CLEARLY named
+  // the event. They must NOT be used to fabricate event labels or inject content the client did
+  // not write. If a keyword appears only in passing, treat the event as unnamed.
   const mentionsLightning = /lightning|antenna|struck/i.test(traumaAnswers);
-  const mentionsIncomingFire = /incoming fire|took fire|taking fire/i.test(traumaAnswers);
   const mentionsHummer = /hummer|flipped|formation/i.test(traumaAnswers);
+  // Incoming fire: only flag if the client wrote about it as a specific event they experienced,
+  // not just a passing mention of the word. Require additional context words nearby.
+  const mentionsIncomingFire = /\b(took fire|taking fire|came under fire|received fire|incoming fire and I|incoming fire while|incoming rounds)\b/i.test(traumaAnswers);
 
   const traumaMissing: string[] = [];
   if (!traumaHasLocation) traumaMissing.push('the specific location where it happened');
@@ -333,25 +338,18 @@ If there was a specific event that triggered the start, mention it here. If symp
       : mentionsHummer
       ? 'You mentioned a Humvee in the formation flipping over and rushing to help.'
       : 'You mentioned witnessing or being involved in a traumatic incident.';
-    const event2Note = mentionsIncomingFire
-      ? 'You also mentioned taking incoming fire during a deployment.'
-      : '';
-
     gaps.push({
       section: 'Section B — Trauma and Stress Exposure',
       field: 'Traumatic Event Description',
       issue: `The events you described are mentioned but not explained. What is written is a sentence or two — the doctor needs a full account of each event including exactly where you were, what happened step by step, what you physically experienced, and how you felt. Missing: ${traumaMissing.join('; ')}.`,
       severity: 'critical',
       guidance: `Describe each traumatic event in its own paragraph. Cover all of these: Where were you (country, base, on patrol, in a convoy)? What were you doing right before it happened? What happened, step by step? What did you see, hear, smell, or physically feel? What did you do in the moment? How did you feel right after — and in the days and weeks that followed?`,
-      example: `${event1Note} ${event2Note} Here is a draft structure — use your actual memory and words:
+      example: `${event1Note} Here is a draft structure — use your actual memory and words, not this exact wording:
 
-"Event 1: [${mentionsLightning ? 'The lightning strike' : 'The incident'}]
-We were [stationed at / on patrol in / operating out of] [location, e.g., Iraq, Kuwait]. It was [day/night/approximate time]. I was [describe what you were doing — your position, your job at that moment]. Without warning, [describe exactly what happened — e.g., 'one of the Marines was ordered to take down a radio antenna and was struck by lightning.' Or 'the vehicle in front of us hit something and rolled.']. I [describe what you did — ran over, took cover, froze, radioed for help]. I saw [describe what you physically saw — be specific]. In the moment I felt [describe: terrified, helpless, in shock, running on adrenaline]. For days after, I [couldn't stop thinking about it / had nightmares / couldn't sleep / stayed on edge expecting it to happen again].
+"Event 1: [Name the event in your own words — describe what happened, not a label]
+We were [stationed at / on patrol in / operating out of] [location]. It was [day/night/approximate time]. I was [describe what you were doing — your position, your job at that moment]. [Describe exactly what happened, step by step, in your own words]. I [describe what you did in the moment — ran over, took cover, froze, radioed for help]. I saw [describe what you physically saw — be specific]. In the moment I felt [describe: terrified, helpless, in shock, running on adrenaline]. For days after, I [describe how it stayed with you — could not stop thinking about it, had nightmares, could not sleep, stayed on edge]."
 
-Event 2: [Taking Incoming Fire]
-This happened during my deployment to [location]. We were [describe the situation — on patrol, at a checkpoint, in the barracks]. [Describe what happened — where the fire came from, what you did, who was around you]. I [took cover / returned fire / helped someone]. Afterward I [describe how you felt — couldn't stop scanning for threats, had trouble sleeping, became hypervigilant]."
-
-Write each event in your own words. Length matters — the more detail you give the doctor, the stronger your case.`
+If there was more than one event, write a separate paragraph for each one using the same structure. Do not combine them. Write in your own words — the doctor needs your actual account, not a template.`
     });
   } else {
     passed.push('Section B — Trauma Description');
@@ -636,10 +634,11 @@ If you have conditions that do not have a medication (such as back pain, tinnitu
 
   // Pull what they wrote for context
   const capsWritten = caps5Answer ? `"${caps5Answer.trim().substring(0, 200)}"` : 'nothing';
+  // Only name a specific event if the client clearly described it — never inject a label
+  // from a passing keyword mention. For incoming fire, a vague mention is not enough.
   const capsEvent = mentionsHummer ? 'the Humvee rollover'
     : mentionsLightning ? 'the lightning strike'
-    : mentionsIncomingFire ? 'taking incoming fire'
-    : 'the most distressing event from your service';
+    : 'the event you described';
 
   if (!capsHasDetail || !capsHasEmotional) {
     gaps.push({
@@ -652,7 +651,7 @@ If you have conditions that do not have a medication (such as back pain, tinnitu
       guidance: `This is the most important section in the form. Write everything you remember about the event that affected you most. Do not summarize — describe. Cover: exactly where you were, what you were doing right before it happened, what happened step by step, what you physically saw/heard/smelled/felt, what you did in the moment, and how you felt immediately after and in the weeks and months that followed.`,
       example: `Based on what you mentioned (${capsEvent}), here is a full draft structure — fill in your actual memory:
 
-"The event that has stayed with me most is [name the event — e.g., the day a Marine in my unit was struck by lightning / the day our convoy took incoming fire / the day the vehicle in front of us rolled].
+"The event that has stayed with me most is [name the event in your own words — describe what it was, not a label].
 
 We were in [location — country, base, on patrol, etc.]. It was [time of day / approximate date / how far into the deployment]. I was [describe what you were doing right before — your position, your job in that moment, who was around you].
 
