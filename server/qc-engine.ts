@@ -470,16 +470,16 @@ Do not leave this blank — even "None" is an acceptable answer.`
       field: 'Combat / Deployment Details',
       issue: `What was written — ${deployWritten} — only lists locations and the word "combat tours." The doctor needs to know what you actually experienced during those deployments: your role, what you were exposed to, and what the most stressful or dangerous situations were.`,
       severity: 'critical',
-      guidance: `For each deployment, describe: What was your specific job and what did you do day to day? Were you in direct combat situations? What types of threats or incidents did you encounter (incoming fire, IED exposure, casualties, missions, etc.)? What was the most dangerous or mentally taxing part of that deployment?`,
-      example: `Here is a draft structure based on what you already listed (${locStr}) — fill in your actual experience:
+      guidance: `For each deployment, describe: What was your specific job and what did you do day to day? What was the environment like — was it high-threat, high-tempo, physically demanding, mentally exhausting? What types of situations did you find yourself in? What was the most stressful or dangerous part of that deployment for you personally?`,
+      example: `Here is a draft structure based on what you already listed (${locStr}) — fill in your actual experience in your own words:
 
-"Deployment 1 — ${ctx.locations[1] || 'Egypt/Kuwait'} (Post-9/11):
-I was deployed to [location] as a [${mosStr}]. My day-to-day responsibilities included [describe your actual duties — e.g., maintaining and operating radio communications systems, running comms on patrols and missions, coordinating with command during operations]. During this deployment I was exposed to [describe — incoming fire, mortar attacks, hostile situations, casualties, etc.]. The most stressful part was [be specific — e.g., being on-call during active engagements with no way to know when or where the next threat would come from].
+"Deployment 1 — [Location and approximate year]:
+I was deployed ${ctx.mos ? `as a ${ctx.mos}` : 'in my assigned role'}. My day-to-day responsibilities included [describe what you actually did — your specific duties, what a typical day or mission looked like, what you were responsible for]. The environment was [describe the conditions — the physical demands, the pace of operations, the level of threat or stress, what you were exposed to]. The part of this deployment that stayed with me most was [describe in your own words — something specific you experienced, witnessed, or had to do as part of your job].
 
-Deployment 2 — ${ctx.locations[ctx.locations.length - 1] || 'Iraq'} (${ctx.locations.includes('Iraq') ? 'Combat Tour' : 'Deployment'}):
-In [location], I [describe the situation on the ground — active combat, high-threat environment, specific incidents you witnessed or were part of]. The nature of this deployment was [describe — high operational tempo, continuous threat exposure, witnessing casualties, etc.]. This is where I experienced [reference your traumatic events from Section B]."
+Deployment 2 — [Location and approximate year]:
+[Use the same structure — your role, your duties, the conditions, and what specifically was most stressful or impactful for you.]"
 
-Every deployment you listed should have its own description. You do not need exact dates — approximate timeframes are fine.`
+Write what you actually experienced. Do not try to make it sound more or less intense than it was — just describe what your job was and what that deployment was actually like for you. Every deployment you listed should have its own paragraph.`
     });
   } else {
     passed.push('Section D — Combat/Deployment Details');
@@ -1135,11 +1135,11 @@ function evaluateRFI(text: string, raw: string, gaps: QCGap[], passed: string[])
       issue: dutyNote,
       severity: 'critical',
       guidance: `Describe the MOS or job title, the branch of service, the type of unit, what typical daily duties involved physically and mentally, and the nature of deployments or assignments. The more specific and detailed, the better the doctor can connect the job to the conditions being claimed.`,
-      example: `Here is a draft:
+      example: `Here is a draft — fill in your actual experience:
 
-"I served in ${branchStr} ${mosStr}. My primary duties included [describe what you did day to day — operating radio equipment on convoys, conducting foot patrols in hostile areas, driving or maintaining vehicles under combat conditions, loading and offloading heavy equipment, providing security at checkpoints, coordinating logistics under fire]. My unit deployed to [${locStr}] where we [describe the operational environment — ran daily missions in high-threat areas, operated in extreme heat with limited rest, were exposed to IED blasts and direct fire contact, worked extended shifts with minimal downtime]. The physical demands of this job included [carrying heavy gear for long distances, operating in body armor for 12 to 18 hours at a time, sleeping in austere field conditions]. The mental demands included [constant threat awareness, decision-making under fire, witnessing casualties, managing high-stress operations with no breaks]."
+"I served in ${branchStr}${ctx.mos ? ` as a ${ctx.mos}` : ' in my assigned role'}. My primary duties included [describe what you did day to day in your own words — what your job actually required you to do, what a typical shift or mission looked like, what you were responsible for]. My unit deployed to [${locStr}] where [describe the operational environment in your own words — what the conditions were like, the pace of operations, what the physical and mental demands of that environment were]. The physical demands of this job included [describe the actual physical requirements of your specific role — what your body had to do consistently]. The mental demands included [describe what was mentally taxing about your specific job or assignments]."
 
-Describe what your actual service looked like on a typical day. That is what the doctor needs to make the connection.`
+Describe what your actual service looked like on a typical day. Do not copy these bracket prompts — replace each one with your own words. The doctor needs to understand your specific job, not a generic military description.`
     });
   } else passed.push('Section III — Military Duties');
 
