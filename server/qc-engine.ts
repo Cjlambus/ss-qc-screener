@@ -457,6 +457,22 @@ export function buildClientProfile(allTexts: { formType: string; text: string }[
     const m = combined.match(pat);
     if (m && !scores.find(s => s.name === name)) scores.push({ name, score: m[1], max });
   }
+  // Fallback: score appears on line BEFORE or AFTER the Total Score label (PDF layout varies)
+  const scoreFallbacks: [string, string, string][] = [
+    ['GAD-7', '21', '21'],
+    ['PHQ-9', '27', '27'],
+    ['PCL-5', '80', '80'],
+  ];
+  for (const [name, maxRange, max] of scoreFallbacks) {
+    if (!scores.find(s => s.name === name)) {
+      // Score BEFORE label
+      const mBefore = combined.match(new RegExp('(\\d{1,2})\\s*\\n[^\\n]*Total\\s+Score\\s*\\(0[–-]' + maxRange + '\\)', 'i'));
+      if (mBefore) { scores.push({ name, score: mBefore[1], max }); continue; }
+      // Score AFTER label
+      const mAfter = combined.match(new RegExp('Total\\s+Score\\s*\\(0[–-]' + maxRange + '\\)[^\\n]*\\n\\s*(\\d{1,2})', 'i'));
+      if (mAfter) scores.push({ name, score: mAfter[1], max });
+    }
+  }
 
   // — MSK body parts
   const mskBodyParts: string[] = [];
@@ -946,10 +962,27 @@ function evaluateMentalHealth(
   }
 
   // ── B: Trauma description ──
-  const traumaAnswers = answerBlocks.filter(b =>
-    /\b(witness|fire|deploy|combat|struck|incoming|lightning|antenna|marine|hummer|formation|flipped|rushed|took|taking)\b/i.test(b)
-  ).join(' ');
+  // Extract ONLY the client's answer to Q1 (describe the event) — stop before Q2 label
+  // This avoids keyword-matching question labels ("combat exposure", "witness") as if they were client text
+  const traumaQ1Answer = (() => {
+    const q1Idx = raw.search(/describe the most distressing or traumatic event/i);
+    if (q1Idx === -1) return '';
+    // Move past the question label itself
+    const afterQ1 = raw.indexOf('\n', q1Idx);
+    if (afterQ1 === -1) return '';
+    // Stop at next question marker (2. Event type / 3. Did the event)
+    const q2Idx = raw.search(/2\.?\s*Event\s*type|\b(MST|Accident|Assault)\b/i);
+    const window = q2Idx > afterQ1 ? raw.substring(afterQ1, q2Idx) : raw.substring(afterQ1, afterQ1 + 800);
+    // Strip blank lines and checkbox noise
+    return window
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 2 && !/^[\u2610\u2611\u2612\s]+$/.test(l) && !/^\d+\./.test(l))
+      .join(' ')
+      .trim();
+  })();
 
+  const traumaAnswers = traumaQ1Answer;
   const traumaWords = wordCount(traumaAnswers);
   const traumaHasLocation = hasLocation(traumaAnswers) || /\b(iraq|kuwait|egypt|deploy|overseas|forward|patrol|convoy|base|camp)\b/i.test(traumaAnswers);
   const traumaHasEmotional = hasEmotionalDetail(traumaAnswers);
