@@ -154,16 +154,58 @@ export function evaluateForm(text: string, formType: string): QCResult {
 
 // Extract client context from the PDF for use in drafted examples
 function extractClientContext(text: string) {
-  const branch = /\b(usmc|marine corps|marines?|army|navy|air force|coast guard|national guard|reserves?)\b/i.exec(text)?.[0]?.toUpperCase() || 'the military';
+  const branch = /\b(usmc|marine corps|marines?|army|navy|air force|air force|coast guard|national guard|reserves?)\b/i.exec(text)?.[0]?.toUpperCase() || 'the military';
+
+  // Job code: covers all branches
+  // Army/Marines: MOS (e.g. 11B, 0311)
+  // Air Force: AFSC (e.g. 1A8X1)
+  // Navy/Coast Guard: Rating or Rate (e.g. BM, MM, IT)
+  // The RFI form uses the label "Primary MOS / AFSC / Rating" for all branches on one line
   const mos = (() => {
-    // Only match if the value after the colon looks like a real answer (alphanumeric, not a prompt)
-    // Reject if it starts with a bracket [ or parenthesis ( which means it is still a placeholder
-    const m = /MOS[^:\n]{0,20}:\s*([A-Za-z0-9][^\n]{3,55})/i.exec(text);
+    // Match the combined field label the form uses
+    const m = /Primary\s+MOS\s*\/\s*AFSC\s*\/\s*Rating\s*:[^\n]{0,10}\n?\s*([A-Za-z0-9][^\n]{2,60})/i.exec(text)
+      || /\bMOS\s*\/\s*AFSC\s*\/\s*Rating\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i.exec(text)
+      || /\bAFSC\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i.exec(text)
+      || /\bRating\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i.exec(text)
+      || /\bRate\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i.exec(text)
+      || /\bMOS\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i.exec(text);
     if (!m) return null;
     const val = m[1].trim();
-    // Reject if it looks like a form label or instruction rather than a client answer
-    if (/^\[|^\(|please|describe|enter|list|if any|your mos|e\.g\./i.test(val)) return null;
+    // Reject if it looks like a form prompt rather than a client answer
+    if (/^\[|^\(|please|describe|enter|list|if any|your mos|e\.g\.|n\/a|N\/A/i.test(val)) return null;
+    if (val.length < 2) return null;
     return val;
+  })();
+
+  // Branch-appropriate label for the job code
+  const jobLabel = (() => {
+    const b = branch.toUpperCase();
+    if (/navy|coast guard/i.test(b)) return 'Rating';
+    if (/air force/i.test(b)) return 'AFSC';
+    return 'MOS'; // Army, Marines, default
+  })();
+
+  // Section III job description — the free-text duties field
+  // Extract the client-typed answer from Section III to use as context in examples
+  const jobDescription = (() => {
+    const sIIIIdx = text.search(/section\s*III\b|SECTION III\b/i);
+    const sIVIdx = text.search(/section\s*IV\b|SECTION IV\b/i);
+    if (sIIIIdx === -1) return null;
+    const sIIIText = text.substring(sIIIIdx, sIVIdx > sIIIIdx ? sIVIdx : sIIIIdx + 2000);
+    // Strip the section header and bullet prompt lines, keep only client-typed paragraphs
+    const answerLines = sIIIText
+      .split('\n')
+      .filter(line => {
+        const t = line.trim();
+        if (!t || t.length < 15) return false;
+        if (/^[•\u2022]/.test(t)) return false;          // bullet prompt lines
+        if (/section\s*III/i.test(t)) return false;       // section header
+        if (/describe your typical|physical demands|shift work|stressor|include/i.test(t)) return false; // prompt text
+        return true;
+      })
+      .join(' ')
+      .trim();
+    return answerLines.length > 20 ? answerLines.substring(0, 600) : null;
   })();
 
   // Location detection: only scan lines that look like client-typed answers.
@@ -199,7 +241,7 @@ function extractClientContext(text: string) {
   const medMatch = /(?:Amlodipine|losartan|metformin|tadalafil|pantoprazole|furosemide|simvastatin|benzonatate|montelukast|tamsulosin|hydrochlorothiazide)/gi;
   const medsFound = text.match(medMatch) || [];
   const uniqueMeds = [...new Set(medsFound.map(m => m.charAt(0).toUpperCase() + m.slice(1).toLowerCase()))];
-  return { branch, mos, locations, meds: uniqueMeds };
+  return { branch, mos, jobLabel, jobDescription, locations, meds: uniqueMeds };
 }
 
 function evaluateMentalHealth(
@@ -214,7 +256,13 @@ function evaluateMentalHealth(
   const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
   const firstLoc = ctx.locations[0] || 'overseas';
   const branch = ctx.branch;
-  const mosStr = ctx.mos ? ctx.mos : 'their MOS';
+  const mosStr = ctx.mos ? ctx.mos : 'their assigned role';
+  const jobLabelStr = ctx.jobLabel || 'MOS';
+  // Job context hint: if we have the Section III description, pull key phrases to use in examples
+  // This keeps examples grounded in what the client actually wrote about their job
+  const jobContextHint = ctx.jobDescription
+    ? `\n\nBased on what you wrote about your duties: "${ctx.jobDescription.substring(0, 300)}${ctx.jobDescription.length > 300 ? '...' : ''}"`
+    : '';
 
   // ── A: Presenting Concerns ──
   const symptomsAnswer = answerBlocks.find(b =>
@@ -480,7 +528,7 @@ Do not leave this blank — even "None" is an acceptable answer.`
       example: `Here is a draft structure based on what you already listed (${locStr}) — fill in your actual experience in your own words:
 
 "Deployment 1 — [Location and approximate year]:
-I was deployed ${ctx.mos ? `as a ${ctx.mos}` : 'in my assigned role'}. My day-to-day responsibilities included [describe what you actually did — your specific duties, what a typical day or mission looked like, what you were responsible for]. The environment was [describe the conditions — the physical demands, the pace of operations, the level of threat or stress, what you were exposed to]. The part of this deployment that stayed with me most was [describe in your own words — something specific you experienced, witnessed, or had to do as part of your job].
+I was deployed${ctx.mos ? ` as a ${ctx.mos} (${ctx.jobLabel || "MOS"})` : " in my assigned role"}. My day-to-day responsibilities included [describe what you actually did — your specific duties, what a typical shift or mission looked like, what you were responsible for as a ${ctx.mos || "service member"}]. The environment was [describe the conditions in your own words — the physical demands, the pace of operations, the level of stress or threat, what you were exposed to as part of that job]. The part of this deployment that affected me most was [describe in your own words — something specific you experienced, witnessed, or had to handle as part of your duties].${jobContextHint}
 
 Deployment 2 — [Location and approximate year]:
 [Use the same structure — your role, your duties, the conditions, and what specifically was most stressful or impactful for you.]"
@@ -1127,6 +1175,11 @@ function evaluateRFI(text: string, raw: string, gaps: QCGap[], passed: string[])
   const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
   const branchStr = ctx.branch || 'the military';
   const mosStr = ctx.mos ? `as a ${ctx.mos}` : 'in their assigned role';
+  const rfiJobLabel = ctx.jobLabel || 'MOS';
+  // If we have the Section III job description, use a snippet of it to ground examples
+  const rfiJobHint = ctx.jobDescription
+    ? `\n\nNote: Based on what you already wrote about your duties — "${ctx.jobDescription.substring(0, 250)}${ctx.jobDescription.length > 250 ? '...' : ''}" — think about the specific physical demands and situations that role put you in when you fill in the brackets above.`
+    : '';
 
   // -- Section III: Military Duties --
   const hasDutiesKeywords = /\b(duty|duties|mos|job|role|unit|platoon|squad|mission|deployed|served|position|rank|assigned|billet|operator|infantry|logistics|supply|communications|intel|artillery|aviation|medical|combat|field|convoy|patrol|base|camp)\b/i.test(text);
@@ -1143,7 +1196,7 @@ function evaluateRFI(text: string, raw: string, gaps: QCGap[], passed: string[])
       guidance: `Describe the MOS or job title, the branch of service, the type of unit, what typical daily duties involved physically and mentally, and the nature of deployments or assignments. The more specific and detailed, the better the doctor can connect the job to the conditions being claimed.`,
       example: `Here is a draft — fill in your actual experience:
 
-"I served in ${branchStr}${ctx.mos ? ` as a ${ctx.mos}` : ' in my assigned role'}. My primary duties included [describe what you did day to day in your own words — what your job actually required you to do, what a typical shift or mission looked like, what you were responsible for]. My unit deployed to [${locStr}] where [describe the operational environment in your own words — what the conditions were like, the pace of operations, what the physical and mental demands of that environment were]. The physical demands of this job included [describe the actual physical requirements of your specific role — what your body had to do consistently]. The mental demands included [describe what was mentally taxing about your specific job or assignments]."
+"I served in ${branchStr}${ctx.mos ? ` as a ${ctx.mos} (${rfiJobLabel})` : ' in my assigned role'}. My primary duties included [describe what your ${ctx.mos || 'role'} actually required you to do day to day — what a typical shift, mission, or workday looked like in your own words]. My unit deployed to [${locStr}] where [describe the operational environment in your own words — the conditions, the pace, what the physical and mental demands of that assignment were for someone in your specific job]. The physical demands included [describe what your body had to do consistently in this role]. The mental demands included [describe what was mentally taxing about your specific job or assignments]."${rfiJobHint}
 
 Describe what your actual service looked like on a typical day. Do not copy these bracket prompts — replace each one with your own words. The doctor needs to understand your specific job, not a generic military description.`
     });
