@@ -16,6 +16,7 @@ export const reviews = sqliteTable("reviews", {
   emailSent: integer("email_sent", { mode: "boolean" }).notNull().default(false),
   emailSentDate: text("email_sent_date"),
   notes: text("notes"),
+  rawText: text("raw_text"),
 });
 
 export const insertReviewSchema = createInsertSchema(reviews).omit({ id: true });

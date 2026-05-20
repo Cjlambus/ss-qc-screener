@@ -20,14 +20,18 @@ sqlite.exec(`
     email_draft_json TEXT NOT NULL DEFAULT '{}',
     email_sent INTEGER NOT NULL DEFAULT 0,
     email_sent_date TEXT,
-    notes TEXT
+    notes TEXT,
+    raw_text TEXT
   )
 `);
+// Migration: add raw_text column if it doesn't exist (for existing DBs)
+try { sqlite.exec('ALTER TABLE reviews ADD COLUMN raw_text TEXT'); } catch (_) {}
 
 export interface IStorage {
   createReview(review: InsertReview): Review;
   getReviews(): Review[];
   getReview(id: number): Review | undefined;
+  getReviewsByClient(clientName: string): Review[];
   updateEmailSent(id: number, sentDate: string): Review | undefined;
 }
 
@@ -42,6 +46,10 @@ export class Storage implements IStorage {
 
   getReview(id: number): Review | undefined {
     return db.select().from(reviews).where(eq(reviews.id, id)).get();
+  }
+
+  getReviewsByClient(clientName: string): Review[] {
+    return db.select().from(reviews).where(eq(reviews.clientName, clientName)).all();
   }
 
   updateEmailSent(id: number, sentDate: string): Review | undefined {

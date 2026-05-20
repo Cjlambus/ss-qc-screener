@@ -1,5 +1,50 @@
 // QC Engine — evaluates extracted PDF text against Semper Solutus QC standards
 
+// ─── Client Profile ─────────────────────────────────────────────────────────
+// Built from ALL form texts submitted for a client before any gap is evaluated.
+// Every example generator receives this so examples anchor to what the client
+// actually wrote rather than generic placeholders.
+
+export interface ClientProfile {
+  // Identity / service
+  branch: string;           // e.g. USN, USMC, Army
+  mos: string | null;       // e.g. 'AT (Avionics Technician)', '5811'
+  jobLabel: string;         // MOS / Rating / AFSC
+  jobDescription: string | null;  // Multi-line job description from MH or RFI
+  yearsService: string | null;
+  locations: string[];      // Deployment locations found across all forms
+
+  // Symptoms the client actually named
+  namedSymptoms: string[];  // e.g. ['Depressed', 'anxiety', 'back pain']
+
+  // Onset / timeline
+  onsetYear: string | null; // e.g. '2008'
+  onsetContext: string | null; // Any context they gave around onset
+
+  // Written content by section (raw client text, not labels)
+  functionalImpactWritten: string | null;  // What they wrote in functional impact
+  suicidalIdeationWritten: string | null;  // What they wrote about SI
+  traumaWritten: string | null;            // What they wrote in trauma section
+  deploymentWritten: string | null;        // What they wrote about deployments
+  treatmentWritten: string | null;         // What they wrote about treatment
+  militaryDutiesWritten: string | null;    // What they wrote about duties (RFI)
+  conditionsWritten: string[];             // Conditions/body parts named in any form
+
+  // Scores (PCL-5, GAD-7, PHQ-9 etc.)
+  scores: { name: string; score: string; max: string }[];
+
+  // MSK / physical specifics
+  mskBodyParts: string[];   // Body parts named in MSK form
+  mskOnsetWritten: string | null;
+
+  // GI specifics
+  giSymptomsWritten: string | null;
+
+  // Headaches specifics
+  headacheOnsetWritten: string | null;
+  headacheSeverityWritten: string | null;
+}
+
 export interface QCGap {
   section: string;
   field: string;
@@ -130,19 +175,348 @@ export function detectFormType(text: string): string {
   return 'Unknown';
 }
 
+// ─── Client Profile Builder ───────────────────────────────────────────────────
+// Reads ALL form texts for a client and produces a unified ClientProfile.
+// Call this before any evaluator so examples can anchor to real client data.
+export function buildClientProfile(allTexts: { formType: string; text: string }[]): ClientProfile {
+  const combined = allTexts.map(f => f.text).join('\n\n');
+  const combinedLower = combined.toLowerCase();
+
+  // — Branch
+  const branchProfile = (() => {
+    for (const { text } of allTexts) {
+      const branchLabelIdx = text.search(/Branch\s+of\s+Service/i);
+      if (branchLabelIdx !== -1) {
+        const window = text.substring(Math.max(0, branchLabelIdx - 150), branchLabelIdx + 100);
+        const m = /\b(USMC|USN|USAF|USCG|USA\b|Marine Corps|Marines?|Army|Navy|Air Force|Coast Guard|National Guard|Reserves?)\b/i.exec(window);
+        if (m) return m[0].toUpperCase();
+      }
+    }
+    return /\b(usmc|marine corps|marines?|army|navy|air force|coast guard|national guard|reserves?)\b/i.exec(combined)?.[0]?.toUpperCase() || 'the military';
+  })();
+
+  // — Years of service
+  const yearsServiceMatch = combined.match(/years\s+of\s+service[^\n]{0,20}\n?\s*(\d+)/i)
+    || combined.match(/served\s+(\d+)\s+years?/i);
+  const yearsService = yearsServiceMatch?.[1] || null;
+
+  // — MOS / job code
+  const mosProfile = (() => {
+    const patterns = [
+      /Primary\s+MOS\s*\/\s*AFSC\s*\/\s*Rating\s*:[^\n]{0,10}\n?\s*([A-Za-z0-9][^\n]{2,60})/i,
+      /MOS\s*\/\s*Job\s*Role[^:]{0,80}:\s*\n?\s*([A-Za-z0-9][^\n]{2,80})/i,
+      /\bMOS\s*\/\s*AFSC\s*\/\s*Rating\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i,
+      /\bAFSC\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/i,
+      /^\s*Rating\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/im,
+      /^\s*Rate\s*:[^\n]{0,5}([A-Za-z0-9][^\n]{2,55})/im,
+    ];
+    for (const { text } of allTexts) {
+      for (const pat of patterns) {
+        const m = pat.exec(text);
+        if (m) {
+          const val = m[1].trim();
+          if (!/^\[|^\(|please|describe|enter|list|if any|your mos|e\.g\.|n\/a/i.test(val) && val.length >= 2) return val;
+        }
+      }
+    }
+    return null;
+  })();
+
+  const jobLabelProfile = (() => {
+    const b = branchProfile.toUpperCase();
+    if (/navy|coast guard|usn|uscg/i.test(b)) return 'Rating';
+    if (/air force|usaf/i.test(b)) return 'AFSC';
+    return 'MOS';
+  })();
+
+  // — Job description (multi-line, from MH form or RFI Section III)
+  const jobDescriptionProfile = (() => {
+    for (const { text } of allTexts) {
+      // MH form: lines after MOS / Job Role label
+      const mosJobIdx = text.search(/MOS\s*\/\s*Job\s*Role[^:]{0,80}:/i);
+      if (mosJobIdx !== -1) {
+        const afterLabel = text.substring(mosJobIdx);
+        const lines = afterLabel.split('\n').slice(1);
+        const descLines: string[] = [];
+        for (const line of lines) {
+          const t = line.trim();
+          if (!t) continue;
+          if (/^[A-Z]\.|section\s*[0-9IVX]|Date of Birth|Branch of Service|Years of Service|Presenting Concerns/i.test(t)) break;
+          if (t.length > 10) descLines.push(t);
+          if (descLines.length >= 8) break;
+        }
+        const desc = descLines.join(' ').trim();
+        if (desc.length > 20) return desc.substring(0, 600);
+      }
+      // RFI: Section III free-text
+      const sIIIIdx = text.search(/section\s*III\b|SECTION III\b/i);
+      const sIVIdx = text.search(/section\s*IV\b|SECTION IV\b/i);
+      if (sIIIIdx !== -1) {
+        const sIIIText = text.substring(sIIIIdx, sIVIdx > sIIIIdx ? sIVIdx : sIIIIdx + 2000);
+        const answerLines = sIIIText.split('\n').filter(line => {
+          const t = line.trim();
+          if (!t || t.length < 15) return false;
+          if (/^[\u2022]/.test(t)) return false;
+          if (/section\s*III|describe your typical|physical demands|shift work|stressor|include/i.test(t)) return false;
+          return true;
+        }).join(' ').trim();
+        if (answerLines.length > 20) return answerLines.substring(0, 600);
+      }
+    }
+    return null;
+  })();
+
+  // — Deployment locations
+  const locationsProfile: string[] = [];
+  if (/\biraq\b/i.test(combined)) locationsProfile.push('Iraq');
+  if (/\bkuwait\b/i.test(combined)) locationsProfile.push('Kuwait');
+  if (/\bafghanistan\b/i.test(combined)) locationsProfile.push('Afghanistan');
+  if (/\bkorea\b/i.test(combined)) locationsProfile.push('Korea');
+  if (/\bokinawa\b/i.test(combined)) locationsProfile.push('Okinawa');
+  if (/\bgermany\b/i.test(combined)) locationsProfile.push('Germany');
+  if (/\bguantanamo\b/i.test(combined)) locationsProfile.push('Guantanamo Bay');
+  if (/\bjordan\b/i.test(combined)) locationsProfile.push('Jordan');
+  if (/\bdjibouti\b/i.test(combined)) locationsProfile.push('Djibouti');
+  if (/\bbahrain\b/i.test(combined)) locationsProfile.push('Bahrain');
+  if (/\bphilippines\b/i.test(combined)) locationsProfile.push('Philippines');
+  if (/\bvietnam\b/i.test(combined)) locationsProfile.push('Vietnam');
+  if (/\bpersian gulf\b/i.test(combined)) locationsProfile.push('Persian Gulf');
+
+  // — Named symptoms: collect distinct words the client used to describe symptoms
+  const namedSymptomsRaw: string[] = [];
+  for (const { text } of allTexts) {
+    // MH: current symptoms field
+    const sympIdx = text.search(/describe current emotional or behavioral symptoms/i);
+    if (sympIdx !== -1) {
+      const snip = text.substring(sympIdx, sympIdx + 400);
+      const lines = snip.split('\n').slice(1, 6);
+      for (const line of lines) {
+        const t = line.trim();
+        if (t.length > 2 && !/^[\u2610\u2611\u2612]|section|document ref|page \d/i.test(t)) namedSymptomsRaw.push(t);
+      }
+    }
+    // RFI Section V: condition names
+    const condMatch = text.match(/(?:condition|diagnosis|diagnosed with)[^\n]{0,60}:\s*([^\n]{3,80})/gi);
+    if (condMatch) condMatch.forEach(m => namedSymptomsRaw.push(m.split(':').pop()?.trim() || ''));
+  }
+  const namedSymptoms = [...new Set(namedSymptomsRaw.filter(s =>
+    s.length > 2 && s.length < 200 &&
+    // Reject document ref IDs (e.g. 3SA2C-VG6GG-GJHWX-UG493) and form metadata
+    !/^[A-Z0-9]{4,}-[A-Z0-9]{4,}/i.test(s) &&
+    !/document ref|page \d|date:|ssn/i.test(s)
+  ))];
+
+  // — Onset year and context
+  let onsetYear: string | null = null;
+  let onsetContext: string | null = null;
+  for (const { text } of allTexts) {
+    const onsetIdx = text.search(/approximate onset|when did.*symptoms.*begin|symptoms.*first.*start/i);
+    if (onsetIdx !== -1) {
+      const snip = text.substring(onsetIdx, onsetIdx + 300);
+      const yearMatch = snip.match(/\b(19|20)\d{2}\b/);
+      if (yearMatch) onsetYear = yearMatch[0];
+      // Check if they wrote more than just a year
+      const lines = snip.split('\n').slice(1, 5).map(l => l.trim()).filter(l => l.length > 3);
+      if (lines.length > 0 && lines[0].length > 5) onsetContext = lines.slice(0, 3).join(' ');
+    }
+  }
+
+  // — Functional impact written
+  let functionalImpactWritten: string | null = null;
+  for (const { text } of allTexts) {
+    const fiIdx = text.search(/functional impact|how.*symptoms.*affect|impact.*daily|daily.*life.*impact/i);
+    if (fiIdx !== -1) {
+      const snip = text.substring(fiIdx, fiIdx + 600);
+      const lines = snip.split('\n').slice(1, 10).map(l => l.trim()).filter(l =>
+        l.length > 10 && !/section|document ref|page \d|\u2610|\u2611/i.test(l)
+      );
+      if (lines.length > 0) { functionalImpactWritten = lines.join(' ').trim(); break; }
+    }
+  }
+  // Strip form label prefix from functionalImpactWritten if present
+  if (functionalImpactWritten) {
+    functionalImpactWritten = functionalImpactWritten
+      .replace(/^Describe how your symptoms affect daily life[^:]*:[\s]*/i, '')
+      .replace(/^How.*symptoms.*affect[^:]*:[\s]*/i, '')
+      .trim();
+    if (functionalImpactWritten.length < 10) functionalImpactWritten = null;
+  }
+  // Also grab the freeform text that's clearly from the client (no label match needed)
+  if (!functionalImpactWritten) {
+    for (const { text } of allTexts) {
+      const fiMatch = text.match(/All i want to do is[^\n]{0,300}/i)
+        || text.match(/can.?t (work|sleep|function|get out of bed|leave)[^\n]{0,200}/i)
+        || text.match(/haven.?t worked[^\n]{0,200}/i);
+      if (fiMatch) { functionalImpactWritten = fiMatch[0].trim(); break; }
+    }
+  }
+
+  // — Suicidal ideation written
+  let suicidalIdeationWritten: string | null = null;
+  for (const { text } of allTexts) {
+    const siMatch = text.match(/thoughts? of (what would|death|dying|suicide|ending)[^\n]{0,300}/i)
+      || text.match(/daily thoughts?[^\n]{0,200}/i);
+    if (siMatch) { suicidalIdeationWritten = siMatch[0].trim(); break; }
+  }
+
+  // — Trauma written
+  let traumaWritten: string | null = null;
+  for (const { text } of allTexts) {
+    const traumaIdx = text.search(/describe briefly|traumatic events?.*describe|if yes.*describe/i);
+    if (traumaIdx !== -1) {
+      const snip = text.substring(traumaIdx, traumaIdx + 400);
+      const lines = snip.split('\n').slice(1, 8).map(l => l.trim()).filter(l =>
+        l.length > 10 && !/\u2610|\u2611|section|page \d|document ref/i.test(l)
+      );
+      if (lines.length > 0) { traumaWritten = lines.join(' ').trim(); break; }
+    }
+  }
+
+  // — Deployment written
+  let deploymentWritten: string | null = null;
+  for (const { text } of allTexts) {
+    const depIdx = text.search(/specify location|deployment.*detail|concise.*pertinent|if yes.*location/i);
+    if (depIdx !== -1) {
+      const snip = text.substring(depIdx, depIdx + 400);
+      const lines = snip.split('\n').slice(1, 8).map(l => l.trim()).filter(l =>
+        l.length > 3 && !/\u2610|\u2611|section|page \d|document ref/i.test(l)
+      );
+      if (lines.length > 0) { deploymentWritten = lines.join(' ').trim(); break; }
+    }
+  }
+
+  // — Military duties written (from RFI Section III)
+  let militaryDutiesWritten: string | null = null;
+  for (const { formType, text } of allTexts) {
+    if (formType === 'RFI') {
+      const sIIIIdx = text.search(/section\s*III\b/i);
+      const sIVIdx = text.search(/section\s*IV\b/i);
+      if (sIIIIdx !== -1) {
+        const sIIIText = text.substring(sIIIIdx, sIVIdx > sIIIIdx ? sIVIdx : sIIIIdx + 2000);
+        const lines = sIIIText.split('\n').filter(l => {
+          const t = l.trim();
+          return t.length > 15 && !/section\s*III|describe your typical|physical demands|stressor/i.test(t);
+        }).join(' ').trim();
+        if (lines.length > 20) { militaryDutiesWritten = lines.substring(0, 600); break; }
+      }
+    }
+  }
+
+  // — Conditions named across all forms
+  const conditionsWritten: string[] = [];
+  const conditionKeywords = /\b(ptsd|tinnitus|hearing loss|back pain|knee pain|shoulder pain|depression|anxiety|sleep apnea|hypertension|diabetes|migraine|headache|acid reflux|gerd|ibs|crohn|sleep disorder|insomnia|nerve damage|neuropathy|tbi|traumatic brain|vertigo|chronic pain)\b/gi;
+  const condMatches = combined.match(conditionKeywords) || [];
+  condMatches.forEach(c => { const lower = c.toLowerCase(); if (!conditionsWritten.includes(lower)) conditionsWritten.push(lower); });
+
+  // — Scores (PCL-5, GAD-7, PHQ-9)
+  const scores: { name: string; score: string; max: string }[] = [];
+  const scorePatterns: [RegExp, string, string][] = [
+    [/PCL-5[^\n]{0,30}?([0-9]{1,2})\/80/i, 'PCL-5', '80'],
+    [/GAD-7[^\n]{0,30}?([0-9]{1,2})\/21/i, 'GAD-7', '21'],
+    [/PHQ-9[^\n]{0,30}?([0-9]{1,2})\/27/i, 'PHQ-9', '27'],
+    [/PCL-5[^\n]{0,10}Total[^\n]{0,10}?([0-9]{1,2})/i, 'PCL-5', '80'],
+    [/GAD-7[^\n]{0,10}Total[^\n]{0,10}?([0-9]{1,2})/i, 'GAD-7', '21'],
+    [/PHQ-9[^\n]{0,10}Total[^\n]{0,10}?([0-9]{1,2})/i, 'PHQ-9', '27'],
+  ];
+  for (const [pat, name, max] of scorePatterns) {
+    const m = combined.match(pat);
+    if (m && !scores.find(s => s.name === name)) scores.push({ name, score: m[1], max });
+  }
+
+  // — MSK body parts
+  const mskBodyParts: string[] = [];
+  for (const { formType, text } of allTexts) {
+    if (formType === 'MSK') {
+      const parts = ['back', 'lumbar', 'cervical', 'neck', 'knee', 'shoulder', 'hip', 'ankle', 'wrist', 'elbow', 'foot', 'spine', 'leg', 'arm'];
+      parts.forEach(p => { if (text.toLowerCase().includes(p)) mskBodyParts.push(p); });
+    }
+  }
+
+  let mskOnsetWritten: string | null = null;
+  for (const { formType, text } of allTexts) {
+    if (formType === 'MSK') {
+      const mskOnsetIdx = text.search(/IV[-\s]*A|when.*injury.*occur|when did this.*start|onset.*musculo/i);
+      if (mskOnsetIdx !== -1) {
+        const snip = text.substring(mskOnsetIdx, mskOnsetIdx + 400);
+        const lines = snip.split('\n').slice(1, 6).map(l => l.trim()).filter(l => l.length > 5);
+        if (lines.length > 0) mskOnsetWritten = lines.join(' ').trim();
+      }
+    }
+  }
+
+  let giSymptomsWritten: string | null = null;
+  for (const { formType, text } of allTexts) {
+    if (formType === 'GI') {
+      const giIdx = text.search(/describe.*symptoms|gastrointestinal.*symptoms|Section III/i);
+      if (giIdx !== -1) {
+        const snip = text.substring(giIdx, giIdx + 400);
+        const lines = snip.split('\n').slice(1, 6).map(l => l.trim()).filter(l => l.length > 5);
+        if (lines.length > 0) giSymptomsWritten = lines.join(' ').trim();
+      }
+    }
+  }
+
+  let headacheOnsetWritten: string | null = null;
+  let headacheSeverityWritten: string | null = null;
+  for (const { formType, text } of allTexts) {
+    if (formType === 'Headaches') {
+      const hOnsetIdx = text.search(/when.*headache.*begin|Q1|Question 1/i);
+      if (hOnsetIdx !== -1) {
+        const snip = text.substring(hOnsetIdx, hOnsetIdx + 300);
+        const lines = snip.split('\n').slice(1, 4).map(l => l.trim()).filter(l => l.length > 3);
+        if (lines.length > 0) headacheOnsetWritten = lines.join(' ').trim();
+      }
+      const hSevIdx = text.search(/Q17|severity.*headache|headache.*severity|rate.*pain/i);
+      if (hSevIdx !== -1) {
+        const snip = text.substring(hSevIdx, hSevIdx + 300);
+        const lines = snip.split('\n').slice(1, 4).map(l => l.trim()).filter(l => l.length > 3);
+        if (lines.length > 0) headacheSeverityWritten = lines.join(' ').trim();
+      }
+    }
+  }
+
+  return {
+    branch: branchProfile,
+    mos: mosProfile,
+    jobLabel: jobLabelProfile,
+    jobDescription: jobDescriptionProfile,
+    yearsService,
+    locations: locationsProfile,
+    namedSymptoms,
+    onsetYear,
+    onsetContext,
+    functionalImpactWritten,
+    suicidalIdeationWritten,
+    traumaWritten,
+    deploymentWritten,
+    militaryDutiesWritten,
+    conditionsWritten,
+    scores,
+    mskBodyParts,
+    mskOnsetWritten,
+    giSymptomsWritten,
+    headacheOnsetWritten,
+    headacheSeverityWritten,
+  };
+}
+
 // Main evaluator
-export function evaluateForm(text: string, formType: string): QCResult {
+export function evaluateForm(text: string, formType: string, allTexts?: { formType: string; text: string }[]): QCResult {
   const gaps: QCGap[] = [];
   const passedFields: string[] = [];
   const raw = text.toLowerCase();
   const answerBlocks = getAnswerBlocks(text);
   const allAnswerText = answerBlocks.join(' ');
 
-  if (formType === 'Mental Health') evaluateMentalHealth(text, raw, answerBlocks, allAnswerText, gaps, passedFields);
-  else if (formType === 'MSK') evaluateMSK(text, raw, gaps, passedFields);
-  else if (formType === 'GI') evaluateGI(text, raw, gaps, passedFields);
-  else if (formType === 'Headaches') evaluateHeadaches(text, raw, gaps, passedFields);
-  else if (formType === 'RFI') evaluateRFI(text, raw, gaps, passedFields);
+  // Build client profile from all available form texts (cross-form context)
+  const textsForProfile = allTexts && allTexts.length > 0 ? allTexts : [{ formType, text }];
+  const profile = buildClientProfile(textsForProfile);
+
+  if (formType === 'Mental Health') evaluateMentalHealth(text, raw, answerBlocks, allAnswerText, gaps, passedFields, profile);
+  else if (formType === 'MSK') evaluateMSK(text, raw, gaps, passedFields, profile);
+  else if (formType === 'GI') evaluateGI(text, raw, gaps, passedFields, profile);
+  else if (formType === 'Headaches') evaluateHeadaches(text, raw, gaps, passedFields, profile);
+  else if (formType === 'RFI') evaluateRFI(text, raw, gaps, passedFields, profile);
   else {
     gaps.push({ section: 'Document', field: 'Form Type', issue: 'Could not identify the form type.', severity: 'critical', guidance: 'Please verify this is one of the five Semper Solutus screening forms: RFI, MSK, GI, Headaches, or Mental Health.' });
   }
@@ -295,18 +669,30 @@ function evaluateMentalHealth(
   answerBlocks: string[],
   allAnswerText: string,
   gaps: QCGap[],
-  passed: string[]
+  passed: string[],
+  profile: ClientProfile
 ) {
-  const ctx = extractClientContext(text);
-  const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
-  const firstLoc = ctx.locations[0] || 'overseas';
-  const branch = ctx.branch;
-  const mosStr = ctx.mos ? ctx.mos : 'their assigned role';
-  const jobLabelStr = ctx.jobLabel || 'MOS';
-  // Job context hint: if we have the Section III description, pull key phrases to use in examples
-  // This keeps examples grounded in what the client actually wrote about their job
-  const jobContextHint = ctx.jobDescription
-    ? `\n\nBased on what you wrote about your duties: "${ctx.jobDescription.substring(0, 300)}${ctx.jobDescription.length > 300 ? '...' : ''}" — think about what that role specifically required of you and what you were exposed to as part of that job.`
+  // Use profile (cross-form context) in place of single-form ctx extraction
+  const locStr = profile.locations.length > 0 ? profile.locations.join(', ') : 'overseas';
+  const firstLoc = profile.locations[0] || 'overseas';
+  const branch = profile.branch;
+  const mosStr = profile.mos ?? 'their assigned role';
+  const jobLabelStr = profile.jobLabel || 'MOS';
+
+  // Helpers for anchoring examples to what the client actually wrote
+  const symptomAnchor = profile.namedSymptoms.length > 0
+    ? profile.namedSymptoms.slice(0, 3).join(', ')
+    : null;
+  const fiAnchor = profile.functionalImpactWritten;
+  const siAnchor = profile.suicidalIdeationWritten;
+  const onsetAnchor = profile.onsetYear;
+  const scoresSummary = profile.scores.length > 0
+    ? profile.scores.map(s => `${s.name}: ${s.score}/${s.max}`).join(', ')
+    : null;
+
+  // Job context hint: grounded in what they wrote about their job
+  const jobContextHint = profile.jobDescription
+    ? `\n\nBased on what you wrote about your duties: "${profile.jobDescription.substring(0, 300)}${profile.jobDescription.length > 300 ? '...' : ''}" — think about what that role specifically required of you and what you were exposed to as part of that job.`
     : '';
 
   // ── A: Presenting Concerns ──
@@ -341,11 +727,19 @@ function evaluateMentalHealth(
       issue: `What was written — ${whatTheyWrote} — is a label, not a description. The doctor needs to understand how each symptom actually shows up in your life: how often, how severe, and what it stops you from doing.`,
       severity: 'critical',
       guidance: `For each symptom you listed, answer three questions: How often does it happen? How bad does it get? What does it stop you from doing? Do not just name the condition — walk the doctor through what it looks like on a typical day.`,
-      example: `Here is a draft you can use and adjust in your own words:
-
-"My depression hits most days. I wake up and have no motivation to do anything — not even basic things like getting out of bed or eating. I stopped doing things I used to enjoy. Some weeks I do not leave the house at all. My anxiety is constant. I am always on edge, expecting something bad to happen. I cannot sit still in public places and I avoid crowded areas entirely. My fatigue is not normal tiredness — even after a full night of sleep I wake up exhausted and feel like I am running on empty all day. ${mentionsAnger ? 'My anger comes out of nowhere. Small things set me off and I have to remove myself before I say or do something I will regret.' : ''}"
-
-Update this with your own words and specifics — the doctor needs your real experience, not a general description.`
+      example: (() => {
+        // Anchor to what client actually named, fall back to generic only if nothing written
+        const symptomsBase = symptomAnchor
+          ? `You mentioned ${symptomAnchor}. For each one, describe what it actually looks like in your day-to-day life:`
+          : `For each symptom you listed, describe what it actually looks like:`;
+        const fiLine = fiAnchor
+          ? `\n\nYou already wrote: "${fiAnchor.substring(0, 200)}" — that is exactly the kind of detail that belongs here too. Expand on it for each symptom.`
+          : '';
+        const scoreLine = scoresSummary
+          ? `\n\nYour scores (${scoresSummary}) indicate severe symptoms. The doctor needs to understand what those numbers look like in real life — what a bad day actually feels like for you.`
+          : '';
+        return `${symptomsBase}\n\n"My [symptom] hits [how often — most days / every day / in waves]. When it does, I [describe what happens — what you cannot do, what you feel, what you stop doing]. It has affected [describe a specific area of your life — work, sleep, relationships, daily activities]."\n\nRepeat this for each symptom you listed.${fiLine}${scoreLine}\n\nUpdate this with your actual experience — the doctor needs your real story, not a general description.`;
+      })()
     });
   } else {
     passed.push('Section A — Current Symptoms');
@@ -397,11 +791,13 @@ Update this with your own words and specifics — the doctor needs your real exp
       issue: onsetNote,
       severity: 'critical',
       guidance: `This field needs three things: (1) an approximate year or timeframe for when symptoms first started; (2) a connection to your service - did they start during deployment, shortly after getting out, or gradually after separation; (3) what you first noticed - trouble sleeping, being on edge, withdrawing from people, nightmares, irritability, something changed. That combination gives the doctor a timeline and a starting point for the nexus.`,
-      example: `Here is a draft format to follow - fill in your actual years and details:
-
-"My symptoms started around [year] - [during my time in ${firstLoc} / shortly after I separated from service / in the years following my time in the military]. At first I noticed [describe what you first noticed: I could not sleep, I was constantly on edge, I stopped wanting to be around people, I started having nightmares, I had no patience and my anger was not normal for me].${ctx.mos ? " As " + article(ctx.mos) + " " + ctx.mos + ", the nature of that work — [describe what about your specific job or assignments was most stressful or left a mark on you] — is part of what I believe contributed to where I am today." : ""} Over time it got worse. The symptoms have been [ongoing ever since / getting progressively worse / coming and going in waves but always there]. It has been approximately [X] years since this started."
-
-If there was a specific event that triggered the start, mention it here. If symptoms built up gradually over time, say that.${ctx.jobDescription ? " Your role as " + (ctx.mos || "a service member") + " is relevant — what that job required of you, what you were exposed to, and what you had to carry because of it." : ""} The doctor needs a clear picture of when this started and what it looked like in the beginning.`
+      example: (() => {
+        const yearLine = onsetAnchor ? `You wrote ${onsetAnchor} — that is a start. Now add the context around it:` : 'Start with an approximate year, then add context:';
+        const symLine = symptomAnchor ? ` At first I noticed my ${symptomAnchor} — ` : ' At first I noticed [';
+        const jobLine = profile.mos ? ` As ${article(profile.mos)} ${profile.mos}, the nature of that work — [describe what about your specific duties or assignments stayed with you] — is part of what I believe contributed to where I am today.` : '';
+        const jobDescLine = profile.jobDescription ? `\n\nYour role as ${profile.mos || 'a service member'} is relevant context — think about what that job required of you, what you were exposed to, and what you had to carry because of it.` : '';
+        return `${yearLine}\n\n"My symptoms started around ${onsetAnchor || '[year]'} — [during my time in ${firstLoc} / shortly after I separated from service / in the years following my time in the military].${symLine}[describe what changed: could not sleep, constantly on edge, stopped wanting to be around people, no patience, anger not normal for me].${jobLine} Over time it got worse. The symptoms have been [ongoing ever since / getting progressively worse]. It has been approximately [X] years since this started."\n\nIf a specific event triggered the start, mention it. If it built up gradually over time, say that.${jobDescLine} The doctor needs a clear picture of when this started and what it looked like in the beginning.`;
+      })()
     });
   } else {
     passed.push('Section A — Onset and Duration');
@@ -446,12 +842,14 @@ If there was a specific event that triggered the start, mention it here. If symp
       issue: `The events you described are mentioned but not explained. What is written is a sentence or two — the doctor needs a full account of each event including exactly where you were, what happened step by step, what you physically experienced, and how you felt. Missing: ${traumaMissing.join('; ')}.`,
       severity: 'critical',
       guidance: `Describe each traumatic event in its own paragraph. Cover all of these: Where were you (country, base, on patrol, in a convoy)? What were you doing right before it happened? What happened, step by step? What did you see, hear, smell, or physically feel? What did you do in the moment? How did you feel right after — and in the days and weeks that followed?`,
-      example: `${event1Note} Here is a draft structure — use your actual memory and words, not this exact wording:
-
-"Event 1: [Name the event in your own words — describe what happened, not a label]
-We were [stationed at / on patrol in / operating out of] [location${ctx.locations.length > 0 ? " — e.g. " + ctx.locations[0] : ""}]. It was [day/night/approximate time]. I was [describe what you were doing — your position, your job at that moment${ctx.mos ? " as " + article(ctx.mos) + " " + ctx.mos : ""}]. [Describe exactly what happened, step by step, in your own words]. I [describe what you did in the moment]. I saw [describe what you physically saw — be specific]. In the moment I felt [describe: terrified, helpless, in shock, running on adrenaline]. For days after, I [describe how it stayed with you — could not stop thinking about it, had nightmares, could not sleep, stayed on edge]."
-
-If there was more than one event, write a separate paragraph for each one using the same structure.${ctx.jobDescription ? "\n\nThink about your role as " + (ctx.mos || "a service member") + " — the situations that job put you in, the things you saw or had to handle as part of your duties. Those are the events the doctor needs to hear about." : ""} Write in your own words — the doctor needs your actual account, not a template.`
+      example: (() => {
+        const locHint = profile.locations.length > 0 ? ` — e.g. ${profile.locations[0]}` : '';
+        const jobHint = profile.mos ? ` as ${article(profile.mos)} ${profile.mos}` : '';
+        const jobDescHint = profile.jobDescription
+          ? `\n\nThink about your role as ${profile.mos || 'a service member'} — the situations that job put you in, the things you saw or had to handle as part of your duties. Those are the events the doctor needs to hear about.`
+          : '';
+        return `${event1Note} Here is a draft structure — use your actual memory and words, not this exact wording:\n\n"Event 1: [Name the event in your own words — describe what happened, not a label]\nWe were [stationed at / on patrol in / operating out of] [location${locHint}]. It was [day/night/approximate time]. I was [describe what you were doing — your position, your job at that moment${jobHint}]. [Describe exactly what happened, step by step, in your own words]. I [describe what you did in the moment]. I saw [describe what you physically saw — be specific]. In the moment I felt [describe: terrified, helpless, in shock, running on adrenaline]. For days after, I [describe how it stayed with you — could not stop thinking about it, had nightmares, could not sleep, stayed on edge]."\n\nIf there was more than one event, write a separate paragraph for each one using the same structure.${jobDescHint} Write in your own words — the doctor needs your actual account, not a template.`;
+      })()
     });
   } else {
     passed.push('Section B — Trauma Description');
@@ -573,15 +971,16 @@ Do not leave this blank — even "None" is an acceptable answer.`
       issue: `What was written — ${deployWritten} — only lists locations and the word "combat tours." The doctor needs to know what you actually experienced during those deployments: your role, what you were exposed to, and what the most stressful or dangerous situations were.`,
       severity: 'critical',
       guidance: `For each deployment, describe: What was your specific job and what did you do day to day? What was the environment like — was it high-threat, high-tempo, physically demanding, mentally exhausting? What types of situations did you find yourself in? What was the most stressful or dangerous part of that deployment for you personally?`,
-      example: `Here is a draft structure based on what you already listed (${locStr}) — fill in your actual experience in your own words:
-
-"Deployment 1 — [Location and approximate year]:
-I was deployed${ctx.mos ? ` as ${article(ctx.mos)} ${ctx.mos} (${ctx.jobLabel || "MOS"})` : " in my assigned role"}. My day-to-day responsibilities included [describe what you actually did — your specific duties, what a typical shift or mission looked like, what you were responsible for as ${ctx.mos ? article(ctx.mos) + " " + ctx.mos : "a service member"}]. The environment was [describe the conditions in your own words — the physical demands, the pace of operations, the level of stress or threat, what you were exposed to as part of that job]. The part of this deployment that affected me most was [describe in your own words — something specific you experienced, witnessed, or had to handle as part of your duties].${jobContextHint}
-
-Deployment 2 — [Location and approximate year]:
-[Use the same structure — your role, your duties, the conditions, and what specifically was most stressful or impactful for you.]"
-
-Write what you actually experienced. Do not try to make it sound more or less intense than it was — just describe what your job was and what that deployment was actually like for you. Every deployment you listed should have its own paragraph.`
+      example: (() => {
+        const depJobLine = profile.mos
+          ? `I was deployed as ${article(profile.mos)} ${profile.mos} (${profile.jobLabel}). My day-to-day responsibilities included [describe what you actually did — your specific duties, what a typical shift looked like, what you were responsible for].`
+          : `I was deployed in my assigned role. My day-to-day responsibilities included [describe what you actually did].`;
+        const depJobDescLine = profile.jobDescription
+          ? `\n\nBased on what you wrote about your duties: "${profile.jobDescription.substring(0, 250)}${profile.jobDescription.length > 250 ? '...' : ''}" — think about what that role specifically required of you and what you were exposed to.`
+          : '';
+        const locHint = locStr !== 'overseas' ? locStr : '[Location]';
+        return `Here is a draft structure — fill in your actual experience in your own words:\n\n"Deployment 1 — [${locHint} and approximate year]:\n${depJobLine} The environment was [describe the conditions — the physical demands, the pace of operations, the level of stress or threat, what you were exposed to as part of that job]. The part of this deployment that affected me most was [describe something specific you experienced, witnessed, or had to handle as part of your duties].${depJobDescLine}\n\nDeployment 2 — [Location and approximate year]:\n[Use the same structure — your role, your duties, the conditions, and what was most stressful or impactful.]"\n\nWrite what you actually experienced. Just describe what your job was and what that deployment was actually like for you. Every deployment you listed should have its own paragraph.`;
+      })()
     });
   } else {
     passed.push('Section D — Combat/Deployment Details');
@@ -645,17 +1044,14 @@ If you feel like you do not have much support, say that — it is important info
       issue: `What was written — ${funcWritten} — covers only ${funcCount} life area${funcCount === 1 ? '' : 's'} and is too brief. The doctor needs a complete picture of how symptoms affect every major part of your life. Missing: ${missingDescriptions}.`,
       severity: 'critical',
       guidance: `Go through each area of your life and be specific about what has changed since your service. The doctor is not looking for a summary — they need concrete examples. If you work, how has that been affected? What does your sleep actually look like? How have your relationships changed? What do you now avoid that you used to do without thinking?`,
-      example: `Here is a draft covering each area — replace with your real experience:
-
-"Work: I currently [work full time / work part time / am unable to work due to symptoms]. ${!funcAreas.work ? '[Describe how symptoms affect your work — e.g., I have trouble concentrating and staying on task. I have a short fuse with coworkers. I have called out because I could not get myself out of the house. My performance has suffered.]' : ''}
-
-Sleep: [Describe your actual sleep — e.g., I get [X] hours on a good night but I wake up multiple times. I have nightmares [several times a week / almost every night] that are graphic and related to things I experienced in the service. I wake up in a cold sweat and cannot go back to sleep. I am exhausted all day regardless of how long I was in bed.]
-
-Relationships: [Describe how your symptoms have changed your relationships — e.g., I have pulled away from people I used to be close to. I have a short fuse and my [wife / family / friends] have noticed. I do not want to be a burden so I keep things to myself, which has created distance. Arguments happen more often than they used to.]
-
-Daily Life: [Describe what you now avoid or cannot do — e.g., I avoid crowded places like grocery stores, malls, and restaurants. Loud noises put me on edge immediately. I do not go to places where I feel like I cannot see the exits. Some days I do not leave the house at all.]"
-
-Fill in each section with what is actually true for you. More detail is always better here.`
+      example: (() => {
+        // Anchor to what the client already wrote, then ask them to expand
+        const fiWrittenLine = fiAnchor
+          ? `You already started: "${fiAnchor.substring(0, 250)}${fiAnchor.length > 250 ? '...' : ''}" — that is exactly the kind of detail needed. Now add the same level of detail for each life area below:`
+          : 'For each area of your life, describe specifically what has changed:';
+        const symRef = symptomAnchor ? ` (related to your ${symptomAnchor})` : '';
+        return `${fiWrittenLine}\n\n"Work: I currently [work full time / work part time / am unable to work]. My symptoms${symRef} affect my work by [describe — trouble concentrating, short fuse with people, calling out, performance suffering, had to stop working entirely].\n\nSleep: My sleep [describe what your sleep actually looks like — how many hours, do you wake up, what wakes you, how you feel in the morning].\n\nRelationships: My symptoms have [describe what has changed — pulled away from people, short fuse with family, pushing people away, isolating, not opening up].\n\nDaily Life: I now avoid [describe what you no longer do or go — specific places, activities, situations you stay away from because of how they make you feel]."\n\nOnly add what is actually true for you. The more specific, the better.`;
+      })()
     });
   } else {
     passed.push('Section F — Functional Impact (all areas covered)');
@@ -772,9 +1168,8 @@ Do not worry about making it sound perfect. Write it the way you would tell it t
 
 // ─── MSK ──────────────────────────────────────────────────────────────────────
 
-function evaluateMSK(text: string, raw: string, gaps: QCGap[], passed: string[]) {
-  const ctx = extractClientContext(text);
-  const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
+function evaluateMSK(text: string, raw: string, gaps: QCGap[], passed: string[], profile: ClientProfile) {
+  const locStr = profile.locations.length > 0 ? profile.locations.join(', ') : 'overseas';
 
   // Scope all checks to Section IV onward to avoid false-passes from Section I service dates/locations
   const sectionIVStart = text.search(/section\s*IV\b|SECTION IV\b|condition.by.condition|describe.*detail.*each/i);
@@ -884,7 +1279,7 @@ Progression tells the doctor this is not a one-time injury - it is an ongoing co
 
 // ─── GI ───────────────────────────────────────────────────────────────────────
 
-function evaluateGI(text: string, raw: string, gaps: QCGap[], passed: string[]) {
+function evaluateGI(text: string, raw: string, gaps: QCGap[], passed: string[], profile: ClientProfile) {
 
   // GI form is primarily checkboxes. In the PDF extraction all checkboxes render as ☐
   // regardless of whether they were checked. We therefore detect client answers by:
@@ -996,9 +1391,8 @@ Severe: "I would rate my GI condition as Severe. On bad days I am unable to leav
 
 // ─── HEADACHES ────────────────────────────────────────────────────────────────
 
-function evaluateHeadaches(text: string, raw: string, gaps: QCGap[], passed: string[]) {
-  const ctx = extractClientContext(text);
-  const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
+function evaluateHeadaches(text: string, raw: string, gaps: QCGap[], passed: string[], profile: ClientProfile) {
+  const locStr = profile.locations.length > 0 ? profile.locations.join(', ') : 'overseas';
 
   // -- Q1: Timeframe / when headaches began --
   const q1Snip = text.substring(0, 800);
@@ -1218,15 +1612,13 @@ If headaches affect your sleep — waking you up at night, preventing rest — i
 
 // ─── RFI ──────────────────────────────────────────────────────────────────────
 
-function evaluateRFI(text: string, raw: string, gaps: QCGap[], passed: string[]) {
-  const ctx = extractClientContext(text);
-  const locStr = ctx.locations.length > 0 ? ctx.locations.join(', ') : 'overseas';
-  const branchStr = ctx.branch || 'the military';
-  const mosStr = ctx.mos ? `as ${article(ctx.mos)} ${ctx.mos}` : 'in their assigned role';
-  const rfiJobLabel = ctx.jobLabel || 'MOS';
-  // If we have the Section III job description, use a snippet of it to ground examples
-  const rfiJobHint = ctx.jobDescription
-    ? `\n\nNote: Based on what you already wrote about your duties — "${ctx.jobDescription.substring(0, 250)}${ctx.jobDescription.length > 250 ? '...' : ''}" — think about the specific physical demands and situations that role put you in when you fill in the brackets above.`
+function evaluateRFI(text: string, raw: string, gaps: QCGap[], passed: string[], profile: ClientProfile) {
+  const locStr = profile.locations.length > 0 ? profile.locations.join(', ') : 'overseas';
+  const branchStr = profile.branch || 'the military';
+  const mosStr = profile.mos ? `as ${article(profile.mos)} ${profile.mos}` : 'in their assigned role';
+  const rfiJobLabel = profile.jobLabel || 'MOS';
+  const rfiJobHint = profile.jobDescription
+    ? `\n\nNote: Based on what you already wrote about your duties — "${profile.jobDescription.substring(0, 250)}${profile.jobDescription.length > 250 ? '...' : ''}" — think about the specific physical demands and situations that role put you in when you fill in the brackets above.`
     : '';
 
   // -- Section III: Military Duties --
@@ -1244,7 +1636,7 @@ function evaluateRFI(text: string, raw: string, gaps: QCGap[], passed: string[])
       guidance: `Describe the MOS or job title, the branch of service, the type of unit, what typical daily duties involved physically and mentally, and the nature of deployments or assignments. The more specific and detailed, the better the doctor can connect the job to the conditions being claimed.`,
       example: `Here is a draft — fill in your actual experience:
 
-"I served in ${branchStr}${ctx.mos ? ` as ${article(ctx.mos)} ${ctx.mos} (${rfiJobLabel})` : ' in my assigned role'}. My primary duties included [describe what your ${ctx.mos || 'role'} actually required you to do day to day — what a typical shift, mission, or workday looked like in your own words]. My unit deployed to [${locStr}] where [describe the operational environment in your own words — the conditions, the pace, what the physical and mental demands of that assignment were for someone in your specific job]. The physical demands included [describe what your body had to do consistently in this role]. The mental demands included [describe what was mentally taxing about your specific job or assignments]."${rfiJobHint}
+"I served in ${branchStr}${profile.mos ? ` as ${article(profile.mos)} ${profile.mos} (${rfiJobLabel})` : ' in my assigned role'}. My primary duties included [describe what your ${profile.mos || 'role'} actually required you to do day to day — what a typical shift, mission, or workday looked like in your own words]. My unit deployed to [${locStr}] where [describe the operational environment in your own words — the conditions, the pace, what the physical and mental demands of that assignment were for someone in your specific job]. The physical demands included [describe what your body had to do consistently in this role]. The mental demands included [describe what was mentally taxing about your specific job or assignments]."${rfiJobHint}
 
 Describe what your actual service looked like on a typical day. Do not copy these bracket prompts — replace each one with your own words. The doctor needs to understand your specific job, not a generic military description.`
     });

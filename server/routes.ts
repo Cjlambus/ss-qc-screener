@@ -34,15 +34,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Detect form type
       const formType = detectFormType(text);
 
-      // Run QC
-      const qcResult = evaluateForm(text, formType);
+      // Gather raw texts from other forms already submitted for this client
+      // so the engine can cross-reference across forms
+      const priorReviews = storage.getReviewsByClient(clientName);
+      const allTexts: { formType: string; text: string }[] = [
+        // Start with the current form being uploaded
+        { formType, text },
+        // Add any prior forms that have raw text stored
+        ...priorReviews
+          .filter(r => r.rawText && r.rawText.trim().length > 50)
+          .map(r => ({ formType: r.formType, text: r.rawText! }))
+      ];
+
+      // Run QC — pass all texts for cross-form context
+      const qcResult = evaluateForm(text, formType, allTexts);
 
       // Generate email draft
       const emailDraft = qcResult.gaps.length > 0
         ? generateEmailDraft(clientName, formType, qcResult.gaps)
         : { subject: "", body: "" };
 
-      // Store review
+      // Store review (including raw text for cross-form context on future uploads)
       const review = storage.createReview({
         clientName,
         clientEmail,
@@ -56,6 +68,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         emailSent: false,
         emailSentDate: null,
         notes: null,
+        rawText: text,
       });
 
       res.json({ review, qcResult, emailDraft });
