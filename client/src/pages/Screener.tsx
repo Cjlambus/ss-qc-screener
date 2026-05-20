@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useLocation } from "wouter";
+import { queryClient } from "@/lib/queryClient";
 import Layout from "@/components/Layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -111,6 +112,8 @@ export default function Screener() {
         navigate(`/review/${reviewIds[0]}`);
       } else {
         // For multiple forms, go to history filtered by this batch
+        // Invalidate reviews cache so History page fetches fresh data
+        await queryClient.invalidateQueries({ queryKey: ["/api/reviews"] });
         navigate(`/history?client=${encodeURIComponent(clientName.trim())}&batch=${encodeURIComponent(reviewIds.join(","))}`);
       }
     } catch (err: any) {
