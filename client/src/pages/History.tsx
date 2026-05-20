@@ -103,13 +103,20 @@ export default function History() {
   const combinedDraft = useMemo(() => {
     if (!batchIds || batchForms.length < 2 || batchFailed.length === 0) return null;
     const clientName = batchForms[0]?.clientName ?? clientParam ?? "Veteran";
+    const FORM_ORDER = ['RFI', 'Mental Health', 'MSK', 'GI', 'Headaches'];
     const formsWithGaps = batchFailed.map(r => ({
       formType: r.formType,
       gaps: (() => {
         try { return JSON.parse(r.gapsJson) as QCGap[]; }
         catch { return []; }
       })(),
-    })).filter(f => f.gaps.length > 0);
+    }))
+    .filter(f => f.gaps.length > 0)
+    .sort((a, b) => {
+      const ai = FORM_ORDER.indexOf(a.formType);
+      const bi = FORM_ORDER.indexOf(b.formType);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
     if (formsWithGaps.length === 0) return null;
     return buildCombinedEmail(clientName, formsWithGaps);
   }, [batchForms, batchFailed, clientParam]);
